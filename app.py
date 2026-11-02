@@ -1028,11 +1028,16 @@ CHAT_HTML = r"""
     .attachment-chip button { width: 22px; height: 22px; padding: 0; border-radius: 6px; background: rgba(150,50,50,.25); color: #ffb8b8; }
     .composer-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 7px; }
     .status { min-height: 15px; color: #8e97a4; font-size: 10px; direction: auto; text-align: right; }
-    .typing-indicator { display: inline-flex; gap: 5px; align-items: center; color: #aeb6c2; font-size: 12px; }
-    .typing-indicator i { width: 5px; height: 5px; border-radius: 50%; background: var(--gold); animation: typing 1.1s infinite ease-in-out; }
-    .typing-indicator i:nth-child(2) { animation-delay: .15s; }
-    .typing-indicator i:nth-child(3) { animation-delay: .3s; }
+    .typing-indicator { display: inline-flex; align-items: center; color: #aeb6c2; }
     .typing-indicator[hidden] { display: none; }
+    /* Compact Yellow Cube thinking animation */
+    .alpha-thinking-loader { --S: 22px; display: inline-flex; align-items: center; gap: 5px; height: 30px; }
+    .alpha-thinking-cell { position: relative; width: calc(var(--S) * 1.35); height: calc(var(--S) * 1.5); flex: none; }
+    .alpha-thinking-cube { position: absolute; left: calc(var(--S) * .06); top: calc(var(--S) * .12); width: var(--S); height: calc(var(--S) * .88); will-change: transform; }
+    .alpha-thinking-cube svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; display: block; }
+    .alpha-thinking-eyes { position: absolute; width: 32%; height: 25%; display: flex; justify-content: space-between; transform: translate(-50%, -50%); will-change: left, top; }
+    .alpha-thinking-eyes i { width: 36%; height: 100%; background: #1a1a1a; border-radius: 28% / 16%; }
+    .alpha-thinking-label { color: #aeb6c2; font-size: 11px; white-space: nowrap; }
     .message.error { border-color: rgba(248,113,113,.3); color: #fecaca; }
     @media (max-width: 760px) {
       .topbar { direction: ltr; }
@@ -1077,7 +1082,7 @@ CHAT_HTML = r"""
   <div class="watermark" aria-hidden="true"></div>
   {% if not subscription_active %}<div class="api-warning">لا توجد مسارات API مفعّلة لحسابك. اطلب من المشرف تفعيل أحد النموذجين من لوحة الإدارة.</div>{% endif %}
   <section class="conversation" id="conversation" aria-live="polite" aria-label="المحادثة">
-    <div class="message assistant" id="typing" hidden><span class="typing-indicator"><i></i><i></i><i></i><span>αlpha يكتب الآن...</span></span></div>
+    <div class="message assistant" id="typing" hidden><span class="typing-indicator"><span class="alpha-thinking-loader" role="status" aria-live="polite"><span class="alpha-thinking-cell"><span class="alpha-thinking-cube" id="alphaThinkingCube"><svg viewBox="0 0 100 88" aria-hidden="true"><defs><linearGradient id="alphaThinkingGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFBC6"/><stop offset="1" stop-color="#FFF59D"/></linearGradient></defs><polygon id="alphaThinkingShape" fill="url(#alphaThinkingGradient)" stroke="url(#alphaThinkingGradient)" stroke-width="14" stroke-linejoin="round"/></svg><span class="alpha-thinking-eyes" id="alphaThinkingEyes"><i></i><i></i></span></span></span><span class="alpha-thinking-label">αlpha يفكر...</span></span></div>
   </section>
   <div class="composer-wrap">
     <section class="composer" aria-label="مربع الرسالة">
@@ -1462,6 +1467,54 @@ el('fullscreenBtn').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); }
   catch (_) { el('status').textContent = 'ملء الشاشة غير متاح في هذا المتصفح.'; }
 });
+/* Yellow Cube animation, scaled to fit the existing typing indicator */
+(() => {
+  const cube = document.getElementById('alphaThinkingCube');
+  const eyes = document.getElementById('alphaThinkingEyes');
+  const shape = document.getElementById('alphaThinkingShape');
+  if (!cube || !eyes || !shape) return;
+  const LEG = 0.83;
+  const STOPS = [
+    { x: 0, y: 0, ex: .34, ey: .47, c: 0 },
+    { x: .228, y: 0, ex: .66, ey: .25, c: 1 },
+    { x: .228, y: .338, ex: .57, ey: .60, c: .55 },
+    { x: 0, y: .338, ex: .30, ey: .55, c: .45 }
+  ];
+  const spring = (k, z) => ({ k, c: 2 * z * Math.sqrt(k) });
+  const BODY = spring(95, .62), LOOK = spring(210, .8);
+  const s = { x: 0, y: 0, vx: 0, vy: 0, ex: .34, ey: .47, evx: 0, evy: 0, c: 0, cv: 0 };
+  let px = 22;
+  const measure = () => { px = cube.offsetWidth || 22; };
+  addEventListener('resize', measure); measure();
+  function integrate(dt, t) {
+    const T = STOPS[(((Math.floor(t / LEG)) % 4) + 4) % 4], sub = 4, h = dt / sub;
+    for (let i = 0; i < sub; i++) {
+      s.vx += (BODY.k * (T.x - s.x) - BODY.c * s.vx) * h; s.x += s.vx * h;
+      s.vy += (BODY.k * (T.y - s.y) - BODY.c * s.vy) * h; s.y += s.vy * h;
+      s.evx += (LOOK.k * (T.ex - s.ex) - LOOK.c * s.evx) * h; s.ex += s.evx * h;
+      s.evy += (LOOK.k * (T.ey - s.ey) - LOOK.c * s.evy) * h; s.ey += s.evy * h;
+      s.cv += (LOOK.k * (T.c - s.c) - LOOK.c * s.cv) * h; s.c += s.cv * h;
+    }
+  }
+  function render() {
+    const ax = Math.abs(s.vx), ay = Math.abs(s.vy);
+    let sx = Math.min(1.3, Math.max(.84, 1 + .13 * ax - .05 * ay));
+    let sy = Math.min(1.34, Math.max(.84, 1 + .17 * ay - .05 * ax));
+    cube.style.transform = `translate(${(s.x * px).toFixed(2)}px, ${(s.y * px).toFixed(2)}px) scale(${sx.toFixed(3)}, ${sy.toFixed(3)})`;
+    eyes.style.left = (s.ex * 100).toFixed(2) + '%';
+    eyes.style.top = (s.ey * 100).toFixed(2) + '%';
+    const c = Math.max(0, Math.min(1.2, s.c)), a = 15 * c, b = 17 * c;
+    shape.setAttribute('points', `${7 + a},7 93,7 93,57 71,81 7,81 7,${7 + b}`);
+  }
+  const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  let last = performance.now(), t = 0;
+  function frame(now) {
+    const dt = Math.max(0, Math.min(.05, (now - last) / 1000)); last = now; t += dt;
+    integrate(dt, t); render(); requestAnimationFrame(frame);
+  }
+  render();
+  if (!reduce) requestAnimationFrame(frame);
+})();
 syncModelSettings();
 loadHistory();
 </script></body></html>
