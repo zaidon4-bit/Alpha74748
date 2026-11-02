@@ -1030,7 +1030,7 @@ CHAT_HTML = r"""
       padding: 0 25px;
       border-bottom: 1px solid rgba(255,255,255,.045);
       background: rgba(8,9,11,.22);
-      z-index: 1;
+      z-index: 4;
     }
     .top-title { font-size: 16px; font-weight: 600; letter-spacing: .01em; }
     .top-left { display: flex; align-items: center; gap: 14px; min-width: 0; }
@@ -1850,7 +1850,7 @@ function codeFilename(language, precedingText, code, index) {
     if (found) { const clean = safeSuggestedFilename(found[1]); if (clean) return clean; }
   }
   const firstLine = String(code || '').split('\n', 1)[0];
-  const codeHint = firstLine.match(/^\s*(?:#|\/\/|<!--)\s*(?:file|filename)\s*[:：]\s*([^\s]+\.[a-zA-Z0-9]+)/i);
+  const codeHint = firstLine.match(/^\s*(?:#|\/\/|\x3c!--)\s*(?:file|filename)\s*[:：]\s*([^\s]+\.[a-zA-Z0-9]+)/i);
   if (codeHint) { const clean = safeSuggestedFilename(codeHint[1]); if (clean) return clean; }
   const lang = String(language || '').trim().toLowerCase().split(/\s+/)[0];
   const ext = extensionByLanguage[lang] || 'txt';
@@ -2085,10 +2085,11 @@ async function loadHistory() {
     if (!response.ok || requestedConversationId !== currentConversationId) return;
     const data = await response.json(); const messages = data.messages || [];
     if (requestedConversationId !== currentConversationId) return;
+    const typingIndicator = el('typing');
     el('conversation').replaceChildren();
     historyMessageCount = messages.length;
     messages.forEach(item => addMessageNode(item.role === 'user' ? 'user' : 'assistant', item.display_text || '', item.id));
-    el('conversation').appendChild(el('typing'));
+    if (typingIndicator) el('conversation').appendChild(typingIndicator);
   } catch (_) { /* Keep the current view intact if history cannot be loaded. */ }
   finally {
     if (requestedConversationId === currentConversationId) { historyReady = true; updateChatMenuNote(); }
