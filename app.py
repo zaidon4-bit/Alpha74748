@@ -250,6 +250,35 @@ MAX_UPLOAD_FILE_BYTES = 8 * 1024 * 1024
 MAX_UPLOAD_TEXT_CHARS = 60_000
 
 
+def insert_user_account(conn, username, password_hash, role):
+    """Insert an account while remaining compatible with legacy schemas that require email."""
+    if USE_POSTGRES:
+        rows = conn.execute(
+            """SELECT column_name FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name = 'users'"""
+        ).fetchall()
+        user_columns = {row["column_name"] for row in rows}
+    else:
+        user_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
+        }
+
+    if "email" in user_columns:
+        # The application authenticates with username, not email. This reserved
+        # .invalid address satisfies legacy NOT NULL email columns without
+        # pretending the account has a real contact address.
+        email = f"{username.strip().lower()}@local.invalid"
+        conn.execute(
+            "INSERT INTO users(username,password_hash,role,email) VALUES(?,?,?,?)",
+            (username, password_hash, role, email),
+        )
+    else:
+        conn.execute(
+            "INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
+            (username, password_hash, role),
+        )
+
+
 def init_db():
     with connect_db() as conn:
         if USE_POSTGRES:
@@ -397,9 +426,8 @@ def init_db():
             (admin_username,),
         ).fetchone()
         if admin is None:
-            conn.execute(
-                "INSERT INTO users(username,password_hash,role) VALUES(?,?, 'admin')",
-                (admin_username, generate_password_hash(admin_password)),
+            insert_user_account(
+                conn, admin_username, generate_password_hash(admin_password), "admin"
             )
             print(f"Admin account created: {admin_username}")
         elif admin["role"] != "admin" or not check_password_hash(admin["password_hash"], admin_password):
@@ -1571,9 +1599,8 @@ def register():
                 if existing:
                     flash("اسم المستخدم مستخدم بالفعل.")
                     return render_template_string(LOGIN_HTML, mode="register"), 400
-                conn.execute(
-                    "INSERT INTO users(username,password_hash,role) VALUES(?,?,'user')",
-                    (username, generate_password_hash(password)),
+                insert_user_account(
+                    conn, username, generate_password_hash(password), "user"
                 )
                 conn.commit()
         except DB_INTEGRITY_ERRORS:
