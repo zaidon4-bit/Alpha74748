@@ -251,7 +251,7 @@ MAX_UPLOAD_TEXT_CHARS = 60_000
 
 
 def insert_user_account(conn, username, password_hash, role):
-    """Insert an account while remaining compatible with legacy schemas that require email."""
+    """Insert accounts into both current and legacy users-table schemas."""
     if USE_POSTGRES:
         rows = conn.execute(
             """SELECT column_name FROM information_schema.columns
@@ -263,20 +263,28 @@ def insert_user_account(conn, username, password_hash, role):
             row["name"] for row in conn.execute("PRAGMA table_info(users)").fetchall()
         }
 
+    # Build the insert from columns that actually exist. Older Supabase tables
+    # may still require legacy email/status fields that this app no longer uses.
+    insert_columns = ["username", "password_hash", "role"]
+    insert_values = [username, password_hash, role]
+
     if "email" in user_columns:
-        # The application authenticates with username, not email. This reserved
-        # .invalid address satisfies legacy NOT NULL email columns without
-        # pretending the account has a real contact address.
-        email = f"{username.strip().lower()}@local.invalid"
-        conn.execute(
-            "INSERT INTO users(username,password_hash,role,email) VALUES(?,?,?,?)",
-            (username, password_hash, role, email),
-        )
-    else:
-        conn.execute(
-            "INSERT INTO users(username,password_hash,role) VALUES(?,?,?)",
-            (username, password_hash, role),
-        )
+        # .invalid is reserved for non-deliverable placeholder addresses.
+        insert_columns.append("email")
+        insert_values.append(f"{username.strip().lower()}@local.invalid")
+
+    if "status" in user_columns:
+        # Account status is not the subscription/API-access switch in this app.
+        # Chat access is still controlled by configured model API routes.
+        insert_columns.append("status")
+        insert_values.append("active")
+
+    columns_sql = ",".join(insert_columns)
+    placeholders_sql = ",".join("?" for _ in insert_columns)
+    conn.execute(
+        f"INSERT INTO users({columns_sql}) VALUES({placeholders_sql})",
+        tuple(insert_values),
+    )
 
 
 def init_db():
