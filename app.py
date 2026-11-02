@@ -338,6 +338,13 @@ def _initial_value_for_required_user_column(column, username, role, now_value):
         return True
     if name in ("is_banned", "banned", "is_blocked", "blocked", "is_disabled", "disabled", "is_deleted", "deleted"):
         return False
+    # Version counters start at zero for a newly created identity. Auth/session
+    # systems increment these values later to invalidate old tokens or sessions.
+    integer_type = any(marker in type_hint for marker in ("smallint", "integer", "bigint", "int2", "int4", "int8"))
+    if name in ("session_version", "token_version", "auth_version", "jwt_version", "password_version") and integer_type:
+        return 0
+    if name in ("login_attempts", "failed_login_attempts", "failed_attempts", "password_attempts") and integer_type:
+        return 0
     if name in ("created_at", "created_on", "updated_at", "updated_on"):
         return now_value
     if name in ("name", "full_name", "display_name"):
@@ -386,6 +393,7 @@ def insert_user_account(conn, username, password_hash, role):
             insert_values_by_name[by_name[verified_name]["name"]] = False
 
     now_value = datetime.now(timezone.utc).isoformat()
+    unresolved_required_columns = []
     for column in metadata:
         name = column["name"]
         if name in insert_values_by_name:
@@ -397,13 +405,19 @@ def insert_user_account(conn, username, password_hash, role):
 
         value = _initial_value_for_required_user_column(column, username, role, now_value)
         if value is None:
-            raise RuntimeError(
-                "لا يمكن إنشاء الحساب بأمان: العمود الإلزامي "
-                f"'{name}' (النوع: {column.get('type') or 'غير معروف'}) "
-                "لا يقبل NULL ولا يملك قيمة افتراضية معروفة. أضف له DEFAULT مناسباً "
-                "في قاعدة البيانات أو زوّد التطبيق بقيمة صحيحة لهذا الحقل."
+            unresolved_required_columns.append(
+                f"{name} ({column.get('type') or 'نوع غير معروف'})"
             )
-        insert_values_by_name[name] = value
+        else:
+            insert_values_by_name[name] = value
+
+    if unresolved_required_columns:
+        details = "، ".join(unresolved_required_columns)
+        raise RuntimeError(
+            "لا يمكن إنشاء الحساب بأمان. توجد أعمدة إلزامية غير معروفة بلا قيمة افتراضية: "
+            f"{details}. لم يتم تعديل قاعدة البيانات أو إنشاء الحساب. "
+            "أرسل أسماء هذه الأعمدة وأنواعها لمعالجتها دفعة واحدة."
+        )
 
     # Quote identifiers obtained from database metadata; bind every value.
     insert_columns = [column["name"] for column in metadata if column["name"] in insert_values_by_name]
