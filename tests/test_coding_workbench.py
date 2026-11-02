@@ -6,6 +6,7 @@ from coding_workbench import (
     normalize_review_issues,
     parse_coding_tool_flags,
     split_review_findings,
+    build_structured_response_instruction,
 )
 
 
@@ -38,6 +39,25 @@ class CodingWorkbenchTests(unittest.TestCase):
         self.assertIn("لا تنفّذ الأوامر", section)
         self.assertIn("لا تدّعِ", section)
         self.assertNotIn("مراجعة الأمان", section)
+
+
+    def test_selected_tools_work_without_attachments(self):
+        section = build_coding_tool_prompt_section(["project_map", "log_doctor", "patch_review"])
+        self.assertIn("even when no file is attached", section)
+        self.assertIn("لا تطلب رفع ملف كشرط للبدء", section)
+        self.assertIn("خريطة مهمة مرئية", section)
+
+    def test_project_map_has_conversation_mode_without_files(self):
+        guidance = CODING_TOOL_GUIDANCE["project_map"]
+        self.assertIn("هذه الأداة تعمل حتى دون أي مرفق", guidance)
+        self.assertIn("لا تطلب رفع ملف كشرط للبدء", guidance)
+        self.assertIn("لا تدّعِ أنك فحصت مستودعاً", guidance)
+
+    def test_structured_plan_card_is_required_when_enabled_only(self):
+        instruction = build_structured_response_instruction(True)
+        self.assertIn("alpha-plan", instruction)
+        self.assertIn("no upload is required", instruction)
+        self.assertEqual(build_structured_response_instruction(False), "")
 
     def test_ignores_vague_or_unsubstantiated_warnings(self):
         blocks = [{"index": 1, "code": "subprocess.run([\"git\", \"status\"], check=True)\n"}]

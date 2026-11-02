@@ -36,7 +36,7 @@ except ImportError:  # SQLite remains available for local development.
 from cryptography.fernet import Fernet
 from secret_crypto import APIKeyCipher
 from coding_workbench import (
-    parse_coding_tool_flags, build_coding_tool_prompt_section,
+    parse_coding_tool_flags, build_coding_tool_prompt_section, build_structured_response_instruction,
     normalize_review_issues, split_review_findings,
 )
 from project_intelligence import analyze_project_attachments, format_project_map_context
@@ -451,7 +451,7 @@ def insert_user_account(conn, username, password_hash, role):
     )
 
 
-def build_effective_system_prompt(admin_prompt, unlazy_enabled, coding_tools=None):
+def build_effective_system_prompt(admin_prompt, unlazy_enabled, coding_tools=None, structured_mode=False):
     """Compose one provider system prompt with explicit administrator priority."""
     admin_text = admin_prompt.strip() if isinstance(admin_prompt, str) else ""
     if not admin_text:
@@ -484,6 +484,9 @@ def build_effective_system_prompt(admin_prompt, unlazy_enabled, coding_tools=Non
     coding_tool_section = build_coding_tool_prompt_section(selected_coding_tools)
     if coding_tool_section:
         sections.append(coding_tool_section)
+    structured_instruction = build_structured_response_instruction(structured_mode)
+    if structured_instruction:
+        sections.append(structured_instruction)
     # User-requested language policy: this is deliberately appended last so it
     # remains effective even if an administrator prompt or optional skill is English.
     sections.append(
@@ -1328,6 +1331,18 @@ CHAT_HTML = r"""
     .search-sources li { margin: 6px 0; overflow-wrap: anywhere; }
     .review-status { color: #cbd1dc; font-size: 12px; line-height: 1.6; }
     .project-map-card { margin-top: 11px; padding: 12px; border: 1px solid rgba(98,160,230,.22); border-radius: 13px; background: linear-gradient(145deg, rgba(19,35,54,.92), rgba(17,21,29,.96)); color: #dce7f5; direction: auto; text-align: start; }
+    .alpha-plan-card { margin-top:12px; padding:13px; border:1px solid rgba(46,155,255,.34); border-radius:15px; background:linear-gradient(145deg,rgba(15,43,70,.82),rgba(13,20,31,.97)); color:#e8f3ff; direction:rtl; text-align:right; box-shadow:0 10px 30px rgba(0,0,0,.16); }
+    .alpha-plan-head { display:flex; align-items:center; gap:9px; margin-bottom:6px; }
+    .alpha-plan-mark { width:29px; height:29px; display:grid; place-items:center; flex:0 0 29px; border:1px solid rgba(69,169,255,.4); border-radius:9px; color:#63baff; background:rgba(30,130,220,.14); }
+    .alpha-plan-title { font-size:13px; font-weight:800; color:#f2f8ff; }
+    .alpha-plan-summary { color:#b8cce1; font-size:11px; line-height:1.7; margin:0 0 11px; }
+    .alpha-plan-stages { display:grid; grid-template-columns:1fr; gap:8px; }
+    .alpha-plan-stage { display:grid; grid-template-columns:27px minmax(0,1fr); gap:9px; padding:9px; border:1px solid rgba(112,174,230,.16); border-radius:11px; background:rgba(255,255,255,.035); }
+    .alpha-plan-number { width:25px; height:25px; display:grid; place-items:center; border-radius:8px; background:rgba(35,145,245,.16); color:#8dcdff; font-size:11px; font-weight:800; }
+    .alpha-plan-stage-title { color:#eaf5ff; font-size:11px; font-weight:750; }
+    .alpha-plan-stage-details { margin-top:4px; color:#aebed0; font-size:10px; line-height:1.65; }
+    .alpha-plan-deliverable { margin-top:5px; color:#80c5ff; font-size:10px; line-height:1.5; }
+    @media(min-width:640px) { .alpha-plan-stages { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     .project-map-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
     .project-map-title { display: flex; align-items: center; gap: 8px; color: #f2f6fc; font-size: 13px; font-weight: 700; }
     .project-map-summary { color: #bdc9d8; font-size: 11px; line-height: 1.7; }
@@ -1520,40 +1535,30 @@ CHAT_HTML = r"""
             <button class="menu-done" id="menuDone" type="button">تم</button>
           </div>
         </div>
-        <button class="control" id="unlazyToggle" type="button" aria-pressed="false" title="تشغيل أو إيقاف التخطيط المنظم">
-          <span class="model-spark">✦</span><span>التخطيط المنظم</span><span class="tool-text" id="unlazyState">OFF</span>
+        <button class="control active" id="unlazyToggle" type="button" aria-pressed="true" title="تشغيل أو إيقاف التخطيط المنظم">
+          <span class="model-spark">✦</span><span>التخطيط المنظم</span><span class="tool-text" id="unlazyState">ON</span>
         </button>
         <div class="studio-anchor">
-          <button class="control studio-control" id="studioBtn" type="button" aria-expanded="false" aria-controls="studioMenu" aria-haspopup="dialog" title="إعداد أدوات البرمجة الاختيارية">
+          <button class="control studio-control active" id="studioBtn" type="button" aria-expanded="false" aria-controls="studioMenu" aria-haspopup="dialog" title="أدوات البرمجة تعمل تلقائياً مع كل رسالة نصية">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14.7 6.3 3 3M4 20l4.5-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.5 16 4 20Z"/><path d="M13 4 20 11"/></svg>
-            <span>استوديو البرمجة</span><span class="studio-count" id="studioCount">0/6</span>
+            <span>استوديو البرمجة</span><span class="studio-count" id="studioCount">6/6</span>
           </button>
           <section class="studio-menu" id="studioMenu" role="dialog" aria-label="استوديو أدوات البرمجة" hidden>
             <div class="studio-head">
               <div class="studio-title"><span class="studio-title-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m14.7 6.3 3 3M4 20l4.5-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.5 16 4 20Z"/><path d="M13 4 20 11"/></svg></span>استوديو البرمجة</div>
-              <span class="studio-count" id="studioState">كل الأدوات متوقفة</span>
+              <span class="studio-count" id="studioState">كل الأدوات تعمل تلقائياً</span>
             </div>
-            <p class="studio-subtitle">اختر الأدوات التي تريد استخدامها مع رسالتك. جميعها اختيارية ومتوقفة افتراضياً، ولا تقوم بتعديل ملفاتك أو تشغيل أوامر تلقائياً.</p>
+            <p class="studio-subtitle">الأدوات الست تعمل تلقائياً مع كل رسالة نصية، دون الحاجة إلى رفع أي ملف. يمكنك إيقاف أداة بعينها أو إيقافها كلها يدوياً. تُبنى الخطط والتحليلات من نص رسالتك وسياق المحادثة؛ ولا تُفحص ملفات فعلية إلا إذا أرفقتها اختيارياً في المحادثة.</p>
             <div class="studio-grid">
-              <button class="studio-tool" type="button" data-coding-tool="project_map" aria-pressed="false"><span class="studio-tool-icon">⌘</span><span class="studio-tool-copy"><span class="studio-tool-name">خريطة المشروع</span><span class="studio-tool-desc">عند تفعيلها، تفحص بنية الأرشيف والملفات المرفقة وتعرض شجرة المشروع وعلاقاته المحتملة.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
-              <button class="studio-tool" type="button" data-coding-tool="impact_analysis" aria-pressed="false"><span class="studio-tool-icon">⇄</span><span class="studio-tool-copy"><span class="studio-tool-name">تحليل تأثير التعديل</span><span class="studio-tool-desc">يحدد الملفات والوظائف المتأثرة ومخاطر كسر الميزات السابقة.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
-              <button class="studio-tool" type="button" data-coding-tool="test_plan" aria-pressed="false"><span class="studio-tool-icon">✓</span><span class="studio-tool-copy"><span class="studio-tool-name">خطة الاختبارات</span><span class="studio-tool-desc">يقترح اختبارات وأوامر تحقق، ولا يشغّلها أو يدّعي تنفيذها.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
-              <button class="studio-tool" type="button" data-coding-tool="patch_review" aria-pressed="false"><span class="studio-tool-icon">Δ</span><span class="studio-tool-copy"><span class="studio-tool-name">مراجعة التغييرات</span><span class="studio-tool-desc">يركز على أصغر تعديل مطلوب ويعرض الملفات والفروقات المقترحة بوضوح.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
-              <button class="studio-tool" type="button" data-coding-tool="log_doctor" aria-pressed="false"><span class="studio-tool-icon">⌁</span><span class="studio-tool-copy"><span class="studio-tool-name">طبيب السجلات</span><span class="studio-tool-desc">يحلل الأخطاء وTraceback والسجلات المرفقة ويبحث عن السبب الجذري.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
-              <button class="studio-tool" type="button" data-coding-tool="security_review" aria-pressed="false"><span class="studio-tool-icon">◈</span><span class="studio-tool-copy"><span class="studio-tool-name">مراجعة الأمان</span><span class="studio-tool-desc">يراجع المصادقة والصلاحيات والتحقق من المدخلات وحماية الأسرار.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="project_map" aria-pressed="true"><span class="studio-tool-icon">⌘</span><span class="studio-tool-copy"><span class="studio-tool-name">خريطة المشروع</span><span class="studio-tool-desc">تبني خريطة للمهمة ومراحلها وعلاقاتها من نص الرسالة وسياق المحادثة.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="impact_analysis" aria-pressed="true"><span class="studio-tool-icon">⇄</span><span class="studio-tool-copy"><span class="studio-tool-name">تحليل تأثير التعديل</span><span class="studio-tool-desc">يحدد المكونات والوظائف التي قد تتأثر، والافتراضات التي تحتاج تحققاً.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="test_plan" aria-pressed="true"><span class="studio-tool-icon">✓</span><span class="studio-tool-copy"><span class="studio-tool-name">خطة الاختبارات</span><span class="studio-tool-desc">يقترح اختبارات وأوامر تحقق، ولا يشغّلها أو يدّعي تنفيذها.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="patch_review" aria-pressed="true"><span class="studio-tool-icon">Δ</span><span class="studio-tool-copy"><span class="studio-tool-name">مراجعة التغييرات</span><span class="studio-tool-desc">يركز على أصغر تعديل مطلوب ويعرض الملفات والفروقات المقترحة بوضوح.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="log_doctor" aria-pressed="true"><span class="studio-tool-icon">⌁</span><span class="studio-tool-copy"><span class="studio-tool-name">طبيب السجلات</span><span class="studio-tool-desc">يحلل وصف الخطأ الذي تكتبه، ويقترح مساراً لتحديد السبب الجذري؛ السجلات اختيارية.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="security_review" aria-pressed="true"><span class="studio-tool-icon">◈</span><span class="studio-tool-copy"><span class="studio-tool-name">مراجعة الأمان</span><span class="studio-tool-desc">يراجع المصادقة والصلاحيات والتحقق من المدخلات وحماية الأسرار.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
             </div>
-            <section class="workspace-lab" aria-label="مختبر ملفات المشروع">
-              <div class="workspace-lab-head"><strong>مختبر المشروع</strong><span>فحص ساكن وتطبيق تعديلات بموافقتك</span></div>
-              <label class="workspace-file-label">ملف المشروع ZIP<input id="projectZipInput" type="file" accept=".zip,application/zip"></label>
-              <button class="studio-action" id="staticCheckBtn" type="button">فحص ساكن للملفات</button>
-              <div id="staticCheckOutput" class="workspace-output" aria-live="polite"></div>
-              <label class="workspace-file-label">Unified Diff<textarea id="patchText" rows="5" placeholder="الصق هنا فرق التعديل الذي اقترحه Alpha..."></textarea></label>
-              <div class="studio-actions"><button class="studio-action muted" id="patchPreviewBtn" type="button">معاينة التعديل</button><button class="studio-action" id="patchApplyBtn" type="button" disabled>تطبيق وتنزيل ZIP</button></div>
-              <div id="patchPreviewOutput" class="workspace-output" aria-live="polite"></div>
-              <p class="workspace-safety">لا يتم تشغيل كود المشروع. التعديل يغيّر ملفات ZIP الموجودة فقط، بعد المعاينة وموافقتك، ويصدر نسخة جديدة للتنزيل دون المساس بالأصل.</p>
-            </section>
             <div class="studio-footer">
-              <span class="studio-footer-note">يُحفظ اختيارك على هذا المتصفح، ويُرسل فقط مع الرسائل التالية.</span>
+              تعمل الأدوات المفعّلة مع كل رسالة نصية. رفع الملفات في مربع المحادثة اختياري وليس شرطاً لتشغيل الأدوات.
               <div class="studio-actions"><button class="studio-action muted" id="studioDisableAll" type="button">إيقاف الكل</button><button class="studio-action" id="studioEnableAll" type="button">تفعيل الكل</button><button class="studio-action muted" id="studioDone" type="button">تم</button></div>
             </div>
           </section>
@@ -1724,11 +1729,11 @@ el('unlazyToggle').addEventListener('click', () => {
   el('unlazyToggle').classList.toggle('active', active);
 });
 const CODING_TOOL_KEYS = ['project_map','impact_analysis','test_plan','patch_review','log_doctor','security_review'];
-const CODING_TOOL_STORAGE_KEY = 'alpha.codingTools.v1:' + {{ username|tojson }};
-let codingToolState = Object.fromEntries(CODING_TOOL_KEYS.map(key => [key, false]));
+const CODING_TOOL_STORAGE_KEY = 'alpha.codingTools.v2:' + {{ username|tojson }};
+let codingToolState = Object.fromEntries(CODING_TOOL_KEYS.map(key => [key, true]));
 try {
   const saved = JSON.parse(localStorage.getItem(CODING_TOOL_STORAGE_KEY) || '{}');
-  CODING_TOOL_KEYS.forEach(key => { codingToolState[key] = saved[key] === true; });
+  CODING_TOOL_KEYS.forEach(key => { if (typeof saved[key] === 'boolean') codingToolState[key] = saved[key]; });
 } catch (_) {}
 function saveCodingToolState() {
   try { localStorage.setItem(CODING_TOOL_STORAGE_KEY, JSON.stringify(codingToolState)); }
@@ -1742,7 +1747,7 @@ function renderCodingToolState() {
     button.setAttribute('aria-pressed', String(active));
   });
   el('studioCount').textContent = enabled.length + '/6';
-  el('studioState').textContent = enabled.length === 0 ? 'كل الأدوات متوقفة' : (enabled.length === 1 ? 'أداة واحدة مفعّلة' : enabled.length + ' أدوات مفعّلة');
+  el('studioState').textContent = enabled.length === CODING_TOOL_KEYS.length ? 'كل الأدوات تعمل تلقائياً' : (enabled.length === 0 ? 'كل الأدوات متوقفة يدوياً' : enabled.length + ' أدوات تعمل تلقائياً');
   el('studioBtn').classList.toggle('active', enabled.length > 0);
 }
 function closeStudioMenu() {
@@ -1907,6 +1912,37 @@ function addCodeFile(parent, language, code, precedingText, index) {
   actions.append(download, copyCode, previewToggle); head.append(identity, actions); card.append(head, preview);
   parent.appendChild(card);
 }
+function addStructuredPlanCard(parent, plan) {
+  if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return false;
+  const stages = Array.isArray(plan.stages) ? plan.stages.filter(item => item && typeof item === 'object' && !Array.isArray(item)).slice(0, 6) : [];
+  const titleText = typeof plan.title === 'string' ? plan.title.trim().slice(0, 140) : '';
+  const summaryText = typeof plan.summary === 'string' ? plan.summary.trim().slice(0, 700) : '';
+  if (!titleText || !stages.length) return false;
+  const card = document.createElement('section'); card.className = 'alpha-plan-card';
+  const head = document.createElement('div'); head.className = 'alpha-plan-head';
+  const mark = document.createElement('span'); mark.className = 'alpha-plan-mark'; mark.textContent = '✦';
+  const title = document.createElement('div'); title.className = 'alpha-plan-title'; title.textContent = titleText;
+  head.append(mark, title); card.appendChild(head);
+  if (summaryText) { const summary = document.createElement('p'); summary.className = 'alpha-plan-summary'; summary.textContent = summaryText; card.appendChild(summary); }
+  const list = document.createElement('div'); list.className = 'alpha-plan-stages';
+  stages.forEach((stage, index) => {
+    const row = document.createElement('article'); row.className = 'alpha-plan-stage';
+    const number = document.createElement('span'); number.className = 'alpha-plan-number'; number.textContent = String(index + 1);
+    const body = document.createElement('div');
+    const stageTitle = document.createElement('div'); stageTitle.className = 'alpha-plan-stage-title';
+    stageTitle.textContent = typeof stage.title === 'string' ? stage.title.slice(0, 140) : 'مرحلة ' + (index + 1);
+    body.appendChild(stageTitle);
+    if (typeof stage.details === 'string' && stage.details.trim()) { const details = document.createElement('div'); details.className = 'alpha-plan-stage-details'; details.textContent = stage.details.trim().slice(0, 500); body.appendChild(details); }
+    if (typeof stage.deliverable === 'string' && stage.deliverable.trim()) { const output = document.createElement('div'); output.className = 'alpha-plan-deliverable'; output.textContent = 'الناتج: ' + stage.deliverable.trim().slice(0, 250); body.appendChild(output); }
+    row.append(number, body); list.appendChild(row);
+  });
+  card.appendChild(list); parent.appendChild(card); return true;
+}
+function streamingTextWithoutPlan(text) {
+  const source = String(text || '');
+  const match = /```alpha-plan(?:\r?\n|$)/i.exec(source);
+  return match ? source.slice(0, match.index).trimEnd() : source;
+}
 function renderAssistantText(parent, text) {
   const source = String(text || '');
   const fence = /```([^\n`]*)\r?\n([\s\S]*?)```/g;
@@ -1916,8 +1952,15 @@ function renderAssistantText(parent, text) {
     if (prose.trim()) {
       const block = document.createElement('div'); block.className = 'message-text'; block.textContent = prose.trim(); parent.appendChild(block);
     }
-    fileIndex += 1;
-    addCodeFile(parent, match[1], match[2].replace(/\r?\n$/, ''), prose, fileIndex);
+    const language = (match[1] || '').trim().toLowerCase();
+    const code = match[2].replace(/\r?\n$/, '');
+    if (language === 'alpha-plan') {
+      let rendered = false;
+      try { rendered = addStructuredPlanCard(parent, JSON.parse(code)); } catch (_) {}
+      if (!rendered) { fileIndex += 1; addCodeFile(parent, match[1], code, prose, fileIndex); }
+    } else {
+      fileIndex += 1; addCodeFile(parent, match[1], code, prose, fileIndex);
+    }
     cursor = fence.lastIndex;
   }
   const rest = source.slice(cursor);
@@ -1976,7 +2019,7 @@ function addProjectMapCard(parent, report) {
   const title = document.createElement('div'); title.className = 'project-map-title'; title.textContent = '⌘ خريطة مشروع Alpha';
   const state = document.createElement('span'); state.className = 'project-map-stat';
   const stateLabels = {
-    analyzed: 'تم الفحص الساكن', no_project_files: 'بانتظار ملفات المشروع',
+    analyzed: 'تم الفحص الساكن', conversation_mode: 'خريطة من المحادثة دون مرفقات', no_project_files: 'لا توجد ملفات مرفقة',
     no_supported_files: 'لا توجد ملفات قابلة للفهرسة', invalid_archive: 'الأرشيف غير صالح',
     analysis_error: 'تعذر إعداد الخريطة'
   };
@@ -1986,8 +2029,9 @@ function addProjectMapCard(parent, report) {
   summary.textContent = report.summary || 'لا تتوفر تفاصيل إضافية.'; card.appendChild(summary);
   const stats = document.createElement('div'); stats.className = 'project-map-stats';
   [
-    ['الملفات', report.file_count], ['الملفات البرمجية', report.source_count],
-    ['العلاقات الداخلية', Array.isArray(report.connections) ? report.connections.length : 0],
+    [report.status === 'conversation_mode' ? 'ملفات مفحوصة' : 'الملفات', report.file_count],
+    [report.status === 'conversation_mode' ? 'مراحل المهمة' : 'الملفات البرمجية', report.status === 'conversation_mode' ? (Array.isArray(report.stages) ? report.stages.length : 0) : report.source_count],
+    [report.status === 'conversation_mode' ? 'مصادر المستخدم' : 'العلاقات الداخلية', report.status === 'conversation_mode' ? 'النص والسياق' : (Array.isArray(report.connections) ? report.connections.length : 0)],
     ['المستثناة', report.skipped_count]
   ].forEach(([label, value]) => {
     const chip = document.createElement('span'); chip.className = 'project-map-stat';
@@ -2013,7 +2057,7 @@ function addProjectMapCard(parent, report) {
     warning.textContent = 'ملاحظات: ' + report.warnings.slice(0, 8).join(' · '); card.appendChild(warning);
   }
   const footer = document.createElement('div'); footer.className = 'project-map-warning';
-  footer.textContent = 'تحليل ساكن للملفات المرفقة فقط؛ لم يتم تشغيل الشيفرة أو تعديل الملفات.'; card.appendChild(footer);
+  footer.textContent = report.status === 'conversation_mode' ? 'هذه خريطة مفاهيمية مبنية على الرسالة وسياق المحادثة فقط؛ لم يتم فحص مستودع أو ملفات.' : 'تحليل ساكن للملفات المرفقة فقط؛ لم يتم تشغيل الشيفرة أو تعديل الملفات.'; card.appendChild(footer);
   parent.appendChild(card);
 }
 function addCodingToolsStatus(parent, toolKeys) {
@@ -2211,11 +2255,11 @@ async function sendMsg() {
           el('status').textContent = 'بدأ وصول الرد...';
         }
         streamedText += data.text || '';
-        ensureAnswerNode(); liveTextNode.textContent = streamedText;
+        ensureAnswerNode(); liveTextNode.textContent = streamingTextWithoutPlan(streamedText);
         el('conversation').scrollTop = el('conversation').scrollHeight;
       } else if (eventName === 'replace') {
         streamedText = data.reply || streamedText;
-        ensureAnswerNode(); liveTextNode.textContent = streamedText;
+        ensureAnswerNode(); liveTextNode.textContent = streamingTextWithoutPlan(streamedText);
       } else if (eventName === 'done') {
         finalData = data;
       } else if (eventName === 'error') {
@@ -2348,38 +2392,6 @@ el('fullscreenBtn').addEventListener('click', async () => {
   try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); else await document.exitFullscreen(); }
   catch (_) { el('status').textContent = 'ملء الشاشة غير متاح في هذا المتصفح.'; }
 });
-async function selectedProjectZip() { return el('projectZipInput').files && el('projectZipInput').files[0] || null; }
-function showWorkspaceOutput(id, message) { const box=el(id); box.classList.add('visible'); box.textContent=message; }
-function fingerprintPatchInput(file, patch) { return [file.name,file.size,file.lastModified,patch].join('|'); }
-el('staticCheckBtn').addEventListener('click', async()=>{
-  const file=await selectedProjectZip(); if(!file){showWorkspaceOutput('staticCheckOutput','اختر ملف ZIP للمشروع أولاً.');return;}
-  const button=el('staticCheckBtn'); button.disabled=true; showWorkspaceOutput('staticCheckOutput','جارٍ فحص الملفات ساكناً دون تشغيل الكود...');
-  try { const form=new FormData(); form.append('project_zip',file,file.name); const r=await fetch('/api/project-check',{method:'POST',body:form}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'تعذر الفحص');
-    const lines=[`الملفات المفحوصة: ${d.scanned} · ناجح: ${d.passed} · أخطاء: ${d.failed} · تم تجاوز: ${d.skipped}`,d.notice||'',...(d.checks||[]).map(x=>`${x.ok?'✓':'✕'} ${x.file} — ${x.message}`),...(d.skipped_files||[]).map(x=>`تجاوز: ${x}`)]; showWorkspaceOutput('staticCheckOutput',lines.join('\n'));
-  } catch(e){showWorkspaceOutput('staticCheckOutput',e.message||'فشل الفحص.');} finally {button.disabled=false;}
-});
-el('patchPreviewBtn').addEventListener('click',async()=>{
-  const file=await selectedProjectZip(), patch=el('patchText').value;
-  if(!file){showWorkspaceOutput('patchPreviewOutput','اختر ملف ZIP للمشروع أولاً.');return;}
-  if(!patch.trim()){showWorkspaceOutput('patchPreviewOutput','الصق Unified Diff أولاً.');return;}
-  const button=el('patchPreviewBtn'); button.disabled=true; el('patchApplyBtn').disabled=true; lastPatchPreview=null;
-  showWorkspaceOutput('patchPreviewOutput','جارٍ تطبيق التعديل تجريبياً في الذاكرة لإعداد المعاينة...');
-  try { const form=new FormData(); form.append('project_zip',file,file.name); form.append('patch_text',patch); const r=await fetch('/api/patch-preview',{method:'POST',body:form}); const d=await r.json(); if(!r.ok) throw new Error(d.error||'تعذرت المعاينة');
-    const details=(d.files||[]).map(x=>`${x.file}  (+${x.added} / -${x.removed})\n${x.diff}`).join('\n\n');
-    showWorkspaceOutput('patchPreviewOutput',`معاينة جاهزة — ${d.files.length} ملف. لم يتم تعديل الأصل.\n\n${details}`);
-    lastPatchFingerprint=fingerprintPatchInput(file,patch); lastPatchPreview=true; el('patchApplyBtn').disabled=false;
-  } catch(e){showWorkspaceOutput('patchPreviewOutput',e.message||'فشلت المعاينة.');} finally {button.disabled=false;}
-});
-el('patchApplyBtn').addEventListener('click',async()=>{
-  const file=await selectedProjectZip(), patch=el('patchText').value;
-  if(!file || !lastPatchPreview || lastPatchFingerprint!==fingerprintPatchInput(file,patch)){showWorkspaceOutput('patchPreviewOutput','المعاينة قديمة أو غير موجودة. أعد المعاينة قبل التطبيق.');el('patchApplyBtn').disabled=true;return;}
-  if(!window.confirm('سيتم إنشاء ZIP جديد بالتعديلات المعروضة. الملف الأصلي لن يتغير. هل تريد المتابعة؟')) return;
-  const button=el('patchApplyBtn'); button.disabled=true;
-  try { const form=new FormData(); form.append('project_zip',file,file.name); form.append('patch_text',patch); form.append('confirmed','1'); const r=await fetch('/api/patch-apply',{method:'POST',body:form}); if(!r.ok){let d={};try{d=await r.json();}catch(_){} throw new Error(d.error||'تعذر تطبيق التعديل');}
-    const blob=await r.blob(), url=URL.createObjectURL(blob), a=document.createElement('a'); a.href=url; a.download='Alpha-project-updated.zip'; document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),2000); showWorkspaceOutput('patchPreviewOutput','تم إنشاء ZIP جديد وتنزيله. لم يتم المساس بالملف الأصلي.'); lastPatchPreview=null;
-  } catch(e){showWorkspaceOutput('patchPreviewOutput',e.message||'تعذر التطبيق.');} finally {button.disabled=false;}
-});
-
 /* Blue cube animation, scaled to fit the existing typing indicator */
 (() => {
   const cube = document.getElementById('alphaThinkingCube');
@@ -3696,7 +3708,10 @@ def chat():
     include_reasoning = str(data.get("include_reasoning", "false")).lower() in ("true", "1", "yes", "on")
     unlazy_enabled = str(data.get("unlazy", "false")).lower() in ("true", "1", "yes", "on")
     coding_tools = parse_coding_tool_flags(data.get("coding_tools", "[]"))
-    prompt = build_effective_system_prompt(get_model_prompt(model), unlazy_enabled, coding_tools)
+    prompt = build_effective_system_prompt(
+        get_model_prompt(model), unlazy_enabled, coding_tools,
+        structured_mode=bool(unlazy_enabled),
+    )
     try:
         review_cycles = int(data.get("review_cycles", 0))
     except (TypeError, ValueError):
@@ -3739,27 +3754,42 @@ def chat():
                 if attachment_labels:
                     request_message = (request_message + "\n\n[المرفقات الحالية: " + "، ".join(attachment_labels) + "]").strip()
 
-                # Project Intelligence runs only when the user explicitly enables
-                # the Project Map tool for this turn. It reads uploaded bytes
-                # statically; it never extracts archives to disk or executes code.
+                # Project Map is useful with or without attachments. Uploaded files
+                # are scanned statically when present; otherwise the model creates a
+                # conceptual task map from the user's message and conversation only.
                 project_map = None
                 if "project_map" in coding_tools:
-                    emit("status", {"label": "جارٍ إعداد خريطة مشروع Alpha...", "message": "فحص ساكن لبنية الملفات المرفقة دون تشغيلها"})
-                    try:
-                        project_map = analyze_project_attachments(uploaded_file_snapshots)
-                        project_map_context = format_project_map_context(project_map)
-                        if project_map_context:
-                            request_message += "\n\n" + project_map_context
-                    except Exception as map_exc:
+                    if uploaded_file_snapshots:
+                        emit("status", {"label": "جارٍ إعداد خريطة ملفات Alpha...", "message": "تحليل ساكن للمرفقات المتاحة"})
+                        try:
+                            project_map = analyze_project_attachments(uploaded_file_snapshots)
+                            project_map_context = format_project_map_context(project_map)
+                            if project_map_context:
+                                request_message += "\n\n" + project_map_context
+                        except Exception as map_exc:
+                            project_map = {
+                                "status": "analysis_error",
+                                "title": "خريطة مشروع Alpha",
+                                "summary": "تعذر إعداد خريطة الملفات؛ يمكن متابعة التحليل من وصف المهمة.",
+                                "warnings": [f"تعذر الفحص ({type(map_exc).__name__})."],
+                                "file_count": 0, "source_count": 0, "languages": [],
+                                "entrypoints": [], "files": [], "python_modules": [],
+                                "connections": [], "routes": [], "skipped_count": 0,
+                            }
+                    else:
                         project_map = {
-                            "status": "analysis_error",
-                            "title": "خريطة مشروع Alpha",
-                            "summary": "تعذر إعداد الخريطة؛ يمكنك متابعة المحادثة دونها.",
-                            "warnings": [f"تعذر الفحص ({type(map_exc).__name__})."],
+                            "status": "conversation_mode", "title": "خريطة مهمة Alpha",
+                            "summary": "لا تحتاج هذه الأداة إلى ملف. ستُبنى خريطة المهمة من رسالتك وسياق المحادثة، مع توضيح ما لا يمكن التحقق منه دون ملفات.",
                             "file_count": 0, "source_count": 0, "languages": [],
                             "entrypoints": [], "files": [], "python_modules": [],
-                            "connections": [], "routes": [], "skipped_count": 0,
+                            "connections": [], "routes": [], "skipped_count": 0, "stages": [],
                         }
+                        request_message += (
+                            "\n\n[خريطة مهمة من المحادثة فقط — لا توجد ملفات مرفقة]\n"
+                            "أنشئ خطة ومخططاً مفاهيمياً اعتماداً على طلب المستخدم وسياق المحادثة. "
+                            "لا تشترط رفع ملف، ولا تخترع أسماء ملفات أو تفاصيل مستودع غير متاحة. "
+                            "ميّز بين الخطوات المقترحة والحقائق التي لا يمكن التحقق منها دون ملفات."
+                        )
                 if upload_notices:
                     request_message += "\n\n[ملاحظات حول المرفقات]\n" + "\n".join(upload_notices)
                 if uploaded_parts:

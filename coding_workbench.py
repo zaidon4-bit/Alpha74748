@@ -11,30 +11,35 @@ from collections.abc import Sequence
 
 CODING_TOOL_GUIDANCE = {
     "project_map": (
-        "خريطة المشروع: حلّل ملفات المشروع التي أرفقها المستخدم فقط. لخّص البنية والمجلدات ونقاط الدخول "
-        "والمكونات والاعتماديات وتدفق البيانات. ميّز بوضوح بين ما وجدته فعلاً وما لا يمكن استنتاجه. "
-        "إذا لم توجد ملفات مشروع مرفقة، اطلب رفع الأرشيف أو الملفات ولا تدّعِ فحص مستودع غير متاح."
+        "خريطة المشروع: هذه الأداة تعمل حتى دون أي مرفق. إذا أرفق المستخدم ملفات أو أرشيف مشروع، حلّل ما أتيح لك فعلياً "
+        "ولخّص البنية والمجلدات ونقاط الدخول والمكونات والاعتماديات وتدفق البيانات، مع التمييز بين الحقائق والاستنتاجات. "
+        "إذا لم توجد ملفات، أنشئ خريطة مهمة مرئية اعتماداً على نص المستخدم وسياق المحادثة: الهدف والمراحل والعلاقات والمخرجات. "
+        "لا تطلب رفع ملف كشرط للبدء، ولا تدّعِ أنك فحصت مستودعاً أو ملفات غير متاحة."
     ),
     "impact_analysis": (
-        "تحليل تأثير التعديل: قبل اقتراح أي تغيير، حدّد الملفات والوظائف والواجهات وقاعدة البيانات التي قد تتأثر، "
-        "واذكر مخاطر التوافق والانحدار. حافظ على السلوك والميزات السابقة، ولا توسّع نطاق التعديل إلى ملفات غير لازمة."
+        "تحليل تأثير التعديل: اعمل من وصف المستخدم وسياق المحادثة حتى دون مرفقات. قبل اقتراح أي تغيير، حدّد مناطق النظام "
+        "والوظائف والواجهات والبيانات التي قد تتأثر، واذكر الافتراضات وما يحتاج تحققاً من الملفات لاحقاً. "
+        "لا تخترع أسماء ملفات أو دوال غير معروفة، وحافظ على السلوك والميزات السابقة ولا توسّع نطاق التعديل."
     ),
     "test_plan": (
-        "خطة الاختبارات: اقترح اختبارات محددة لحالات النجاح والفشل والحالات الحدّية، واكتب أوامر التحقق المناسبة "
-        "لبيئة المشروع. لا تنفّذ الأوامر ولا تدّعِ أن الاختبارات نُفذت؛ صنّفها بوضوح على أنها مقترحة أو غير مشغّلة."
+        "خطة الاختبارات: أنشئ خطة اختبار من وصف المهمة حتى دون إرفاق المشروع، تغطي النجاح والفشل والحالات الحدّية. "
+        "عندما تكون بيئة المشروع أو ملفاته غير متاحة، اذكر أوامر تحقق عامة أو افتراضية بوضوح ولا تخترع نتائج. "
+        "لا تنفّذ الأوامر ولا تدّعِ أن الاختبارات نُفذت؛ صنّفها بوضوح على أنها مقترحة أو غير مشغّلة."
     ),
     "patch_review": (
-        "مراجعة التغييرات: اجعل التغييرات المقترحة صغيرة ومحصورة في المطلوب. اذكر الملفات المتأثرة وسبب كل تغيير، "
-        "وقدّم Diff واضحاً عند توفر سياق كافٍ. لا تدّعِ أنك عدّلت ملفات المستخدم أو طبّقت Patch تلقائياً."
+        "مراجعة التغييرات: اعمل من الطلب النصي حتى دون ملفات. اقترح أصغر تغيير مطلوب، واشرح المناطق المتأثرة. "
+        "قدّم Diff فعلياً فقط عند توفر نص الملفات؛ وإلا قدّم تصوراً للتغيير دون اختراع محتوى ملفات أو مسارات. "
+        "لا تدّعِ أنك عدّلت ملفات المستخدم أو طبّقت Patch تلقائياً."
     ),
     "log_doctor": (
-        "طبيب السجلات: عند وجود سجلات أو Traceback مرفقة، ابدأ بأول خطأ سببي لا بآخر أثر تابع له، "
-        "واربط الاستنتاج بالرسائل والأسطر الموجودة. ميّز السبب المؤكد عن الاحتمالات، ولا تكرر كلمات المرور أو "
-        "مفاتيح API أو الرموز السرية إن ظهرت في السجلات؛ استبدلها بعلامة [مخفي]."
+        "طبيب السجلات: اعمل حتى دون سجلات مرفقة. إذا وُجدت سجلات، ابدأ بأول خطأ سببي واربط الاستنتاج بالنص والأسطر. "
+        "إذا لم توجد، استخدم وصف المستخدم لبناء مسار تشخيص مرتب وحدد ما يلزم جمعه لاحقاً دون إيقاف المساعدة. "
+        "ميّز السبب المؤكد عن الاحتمالات، ولا تكرر كلمات المرور أو مفاتيح API أو الرموز السرية؛ استبدلها بعلامة [مخفي]."
     ),
     "security_review": (
-        "مراجعة الأمان: راجع المصادقة والصلاحيات والتحقق من المدخلات وتخزين الأسرار والجلسات وسجلات الأخطاء "
-        "وحدود المعدل. اذكر الثغرات مع دليل من الملفات، واقترح إصلاحات دفاعية فقط."
+        "مراجعة الأمان: اعمل من وصف المستخدم حتى دون ملفات. عند غياب الشيفرة، قدّم مراجعة معمارية مبدئية وافصلها "
+        "عن النتائج المثبتة بالملفات. عند توفر الشيفرة، راجع المصادقة والصلاحيات والمدخلات والأسرار والجلسات والسجلات. "
+        "لا تنسب ثغرة إلى ملف غير متاح، واقترح إصلاحات دفاعية فقط."
     ),
 }
 
@@ -153,9 +158,28 @@ def build_coding_tool_prompt_section(selected_tools: Sequence[str]) -> str:
     if not selected:
         return ""
     return (
-        "[USER-SELECTED OPTIONAL CODING WORKBENCH — CURRENT TURN ONLY]\n"
-        "Apply only these selected analysis modes to the current request. They are advisory workflows, "
-        "not background processes. Do not execute shell commands, run uploaded code, install packages, "
-        "modify files, or apply patches automatically. Ask for missing project files when necessary.\n\n"
+        "[ALPHA AUTOMATIC CODING WORKBENCH — CURRENT TURN ONLY]\n"
+        "Apply these selected modes to the user's current message and conversation context even when no file is attached. "
+        "Attachments are optional evidence, not a prerequisite. If files are absent, still provide the useful conceptual "
+        "analysis, plan, relationships, and next steps; state only which file-specific facts cannot be verified. "
+        "These are user-facing workflows, not background processes. Do not execute shell commands, run uploaded code, "
+        "install packages, modify files, or apply patches automatically.\n\n"
         + "\n".join("- " + CODING_TOOL_GUIDANCE[key] for key in selected)
+    )
+
+
+def build_structured_response_instruction(enabled: bool) -> str:
+    """Require a rendered task-plan card whenever structured planning/tools are enabled."""
+    if not enabled:
+        return ""
+    return (
+        "[ALPHA STRUCTURED RESPONSE CARD — REQUIRED FOR THIS TURN]\n"
+        "Alongside your normal helpful Arabic answer, finish with exactly one fenced block labelled alpha-plan. "
+        "The block must contain valid JSON only, using this schema: "
+        '{"title":"عنوان قصير","summary":"ملخص واضح","stages":[{"title":"اسم المرحلة","details":"ما الذي سيحدث","deliverable":"الناتج المتوقع"}]}. '
+        "Use 1–6 stages. This block is rendered by Alpha as a visual plan card, not shown as raw code. "
+        "Build the plan from the current message and available conversation context; no upload is required. "
+        "For ordinary conversation, keep it brief and natural (one stage is enough when appropriate); do not invent project files, "
+        "repository structure, test results, or completed actions. If no project files are attached, describe a task/workflow map, "
+        "not a repository file map. Keep all card values in Arabic."
     )
