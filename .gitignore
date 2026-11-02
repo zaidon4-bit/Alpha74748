@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.python-version.local
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.api_encryption.key
+.flask_secret_key
+*.pem
+*.key
+
+# Local databases and runtime files
+*.db
+*.sqlite
+*.sqlite3
+instance/
+*.log
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

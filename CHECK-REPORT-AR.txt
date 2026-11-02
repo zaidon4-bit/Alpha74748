@@ -1,0 +1,29 @@
+تقرير فحص نسخة Alpha AI للنشر على Render + Supabase
+
+النتيجة: اجتازت الفحوصات الساكنة وفحوصات المحاكاة المحددة أدناه.
+
+نجح:
+- فحص صياغة Python لملفي app.py وmigrate_sqlite_to_supabase.py.
+- التحقق من render.yaml ووجود Gunicorn وفحص صحة /healthz.
+- اختبار طبقة توافق PostgreSQL مع ? placeholders وقراءة الصفوف بالاسم والفهرس عبر mock.
+- اختبار إنشاء مخطط SQLite وترحيل عمود API القديم إلى مفتاح Google ومسار API.
+- اختبار حفظ تعليمات النموذجين وتهيئة حساب المشرف من متغيرات البيئة.
+- فحص وجود Qwen/Gemma بالاسمين الظاهرين المطلوبين، Thinking، UNLAZY، Web Search، API Failover، ذاكرة 80 رسالة، وUTF-8 SSE.
+- التأكد من عدم وجود app.db أو ملفات .key أو .env حقيقية ضمن مجلد الحزمة.
+
+لم يُختبر:
+- اتصال فعلي بقاعدة Supabase الخاصة بالمستخدم.
+- بناء وتشغيل Render الفعليان.
+- مفاتيح Xkiro أو Google الحقيقية.
+- اختبار دخول المستخدمين ورفع الملفات عبر موقع منشور.
+
+السبب: لا تتوفر بيانات اعتماد Supabase/Render ومفاتيح المزودين في بيئة البناء، كما تعذر تنزيل الحزم الخارجية. لا تعتبر هذه النسخة منشورة بعد؛ يلزم ربط مستودع GitHub وإعداد متغيرات Render.
+
+الأسرار المطلوبة في Render:
+- DATABASE_URL: رابط Supabase PostgreSQL Session Pooler.
+- ADMIN_USERNAME: الافتراضي admin.
+- ADMIN_PASSWORD: كلمة مرور قوية يضعها مالك المشروع في Render، ولا تحفظ في GitHub.
+- FLASK_SECRET_KEY: سر عشوائي ثابت؛ ينشئه Render في Blueprint.
+- API_ENCRYPTION_KEY: سر ثابت؛ عند ترحيل قاعدة قديمة استخدم قيمة .api_encryption.key الأصلية بدلاً من قيمة جديدة.
+
+مهم: لا ترفع app.db أو .api_encryption.key أو .flask_secret_key أو .env إلى GitHub.
