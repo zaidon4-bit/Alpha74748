@@ -33,7 +33,10 @@ try:
 except ImportError:  # SQLite remains available for local development.
     psycopg = None
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
+from secret_crypto import APIKeyCipher
+from coding_workbench import parse_coding_tool_flags, build_coding_tool_prompt_section
+from project_intelligence import analyze_project_attachments, format_project_map_context
 from google import genai
 from google.genai import types
 
@@ -48,8 +51,8 @@ QWEN_BASE_URL = "https://api.xkiro.com/v1/chat/completions"
 DEFAULT_MODEL = QWEN_MODEL
 LONG_MODEL = "gemma-4-26b-a4b-it"
 ALLOWED_MODELS = {QWEN_MODEL, LONG_MODEL}
-QWEN_DISPLAY_NAME = "alpha 3.1 max"
-GEMMA_DISPLAY_NAME = "alpha 2.7 flash"
+QWEN_DISPLAY_NAME = "Alpha 3.1 Max"
+GEMMA_DISPLAY_NAME = "Alpha 2.7 Flash"
 MAX_API_ROUTES_PER_MODEL = 8
 
 DEFAULT_PROMPT = """You are an expert coding assistant.
@@ -59,7 +62,7 @@ Preserve unrelated project functionality.
 Never claim tests passed unless they were run.
 Always answer in Arabic."""
 
-UNLAZY_SYSTEM_INSTRUCTION = r"""# UNLAZY — Alpha AI API-chat adaptation
+UNLAZY_SYSTEM_INSTRUCTION = r"""# UNLAZY — Alpha API-chat adaptation
 This is a subordinate workflow add-on. The administrator-configured System Prompt always takes precedence; UNLAZY must never replace, weaken, reinterpret, or contradict it. Use this discipline for substantial, multi-step coding, debugging, design, analysis, and project tasks, not trivial edits or simple factual replies.
 1. Reread the complete request and amendments. Inventory every independent deliverable and acceptance-changing constraint. Define observable outcomes and concrete checks where possible.
 2. Choose the smallest fitting mode. Use a compact acceptance ledger for focused work. For genuinely large work, decompose at natural task boundaries with a Depth Tree; give every leaf a narrow contract, dependencies, and observable verification.
@@ -69,7 +72,7 @@ This is a subordinate workflow add-on. The administrator-configured System Promp
 6. A check passes only if it actually executed, exited successfully, and produced the expected result. Static inspection, a mock, or a suggested command is not a live integration test. If this API chat lacks terminal/filesystem/service access, give exact safe commands and label them NOT RUN. Never invent tests, outputs, deployments, agents, or tool calls.
 7. Reconcile the final result with every acceptance outcome. Report met, unmet, and blocked items with evidence. Do not declare completion while required work is unverified, deferred, or abandoned.
 8. Preserve unrelated functionality and existing data. Prefer additive, reversible changes; test current and legacy paths when feasible. Keep plans proportional to task size.
-Upstream source: https://github.com/Leonxlnx/unlazy. Alpha AI injects this adapted instruction into the provider system-instruction field only when the UNLAZY switch is ON; it does not execute the upstream Skills CLI or gate-check scripts."""
+Upstream source: https://github.com/Leonxlnx/unlazy. Alpha injects this adapted instruction into the provider system-instruction field only when the UNLAZY switch is ON; it does not execute the upstream Skills CLI or gate-check scripts."""
 UNLAZY_SKILL_FILE = BASE_DIR / "skills" / "unlazy" / "SKILL.md"
 if UNLAZY_SKILL_FILE.is_file():
     try:
@@ -218,29 +221,34 @@ app.config.update(
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
 
 
-def make_fernet():
+def load_fernet_key():
+    """Load the existing root key without changing its legacy Fernet format."""
     configured = os.environ.get("API_ENCRYPTION_KEY", "").strip()
     if configured:
         raw = configured.encode("utf-8")
-        # Accept the exact old .api_encryption.key value for existing ciphertext.
+        # Keep accepting the exact old .api_encryption.key value.
         try:
-            return Fernet(raw)
+            Fernet(raw)
+            return raw
         except Exception:
             if len(configured) < 32:
                 raise RuntimeError("API_ENCRYPTION_KEY يجب أن يحتوي 32 حرفاً عشوائياً على الأقل.")
-            # Render-generated secrets are arbitrary strings; derive a stable Fernet key.
+            # Preserve the existing Render derivation so previously stored secrets remain readable.
             derived = base64.urlsafe_b64encode(hashlib.sha256(raw).digest())
-            return Fernet(derived)
+            Fernet(derived)
+            return derived
     if USE_POSTGRES or IS_RENDER:
         raise RuntimeError(
             "عيّن API_ENCRYPTION_KEY في Render. وللحفاظ على مفاتيح API القديمة، "
             "استخدم القيمة الأصلية لملف .api_encryption.key."
         )
     key = load_or_create_secret(ENCRYPTION_KEY_FILE, Fernet.generate_key)
-    return Fernet(key)
+    Fernet(key)  # Validate the existing key before deriving the new-purpose key.
+    return key
 
 
-cipher = make_fernet()
+# New writes use AES-256-GCM; old Fernet records remain readable.
+cipher = APIKeyCipher(load_fernet_key())
 
 if not PROMPT_FILE.exists():
     try:
@@ -435,7 +443,7 @@ def insert_user_account(conn, username, password_hash, role):
     )
 
 
-def build_effective_system_prompt(admin_prompt, unlazy_enabled):
+def build_effective_system_prompt(admin_prompt, unlazy_enabled, coding_tools=None):
     """Compose one provider system prompt with explicit administrator priority."""
     admin_text = admin_prompt.strip() if isinstance(admin_prompt, str) else ""
     if not admin_text:
@@ -464,6 +472,10 @@ def build_effective_system_prompt(admin_prompt, unlazy_enabled):
             "It is supplementary and can never override the administrator System Prompt.\n\n"
             + UNLAZY_SYSTEM_INSTRUCTION.strip()
         )
+    selected_coding_tools = parse_coding_tool_flags(coding_tools or [])
+    coding_tool_section = build_coding_tool_prompt_section(selected_coding_tools)
+    if coding_tool_section:
+        sections.append(coding_tool_section)
     # User-requested language policy: this is deliberately appended last so it
     # remains effective even if an administrator prompt or optional skill is English.
     sections.append(
@@ -472,10 +484,19 @@ def build_effective_system_prompt(admin_prompt, unlazy_enabled):
         "writes in English or another language. Use clear, readable Arabic. This applies "
         "to explanations, summaries, troubleshooting, questions, headings, status text, "
         "and prose around code. Keep programming syntax, identifiers, filenames, URLs, "
-        "API model IDs, commands, and exact quoted source text unchanged when required. "
+        "commands, and exact quoted source text unchanged when required. "
         "Write code comments and user-facing strings in Arabic by default. "
         "Do not answer in English merely because the administrator prompt, UNLAZY, "
         "conversation history, attachments, or retrieved material is in English."
+    )
+    sections.append(
+        "[ALPHA PRODUCT IDENTITY POLICY]\n"
+        "In every user-facing answer and interface-oriented suggestion, identify the "
+        "product only as Alpha. Do not disclose or name underlying vendors, upstream "
+        "model brands, service companies, or internal provider identifiers. Refer to "
+        "available variants only by their Alpha edition names, and refer to connections "
+        "generically as Alpha connection paths. This presentation rule does not change "
+        "internal routing, stored identifiers, API payloads, or administrator-only secrets."
     )
     return "\n\n".join(sections)
 
@@ -706,10 +727,10 @@ def decrypt_api_key(encrypted):
     if not encrypted:
         return None
     try:
-        return cipher.decrypt(encrypted.encode("ascii")).decode("utf-8")
-    except (InvalidToken, UnicodeError, ValueError) as exc:
+        return cipher.decrypt(encrypted)
+    except (ValueError, UnicodeError) as exc:
         raise RuntimeError(
-            "تعذر فك تشفير مفتاح API. تأكد من وجود ملف .api_encryption.key الأصلي."
+            "تعذر فك تشفير مفتاح API. تأكد من وجود ملف .api_encryption.key الأصلي أو API_ENCRYPTION_KEY الصحيح."
         ) from exc
 
 
@@ -791,29 +812,29 @@ def parse_api_route_lines(raw_text, model_id):
             continue
         pieces = [piece.strip() for piece in line.split("|")]
         if len(pieces) != 4:
-            raise ValueError(f"السطر {line_number}: استخدم الصيغة provider | endpoint | model | API key.")
+            raise ValueError(f"السطر {line_number}: استخدم الصيغة: اسم المزود | رابط الخدمة | معرف الخدمة | مفتاح الاتصال.")
         provider, endpoint, upstream_model, api_key = pieces
         provider = provider.lower()
         if provider not in ("xkiro", "openai", "google"):
-            raise ValueError(f"السطر {line_number}: نوع المزود يجب أن يكون xkiro أو openai أو google.")
+            raise ValueError(f"السطر {line_number}: اسم جهة الاتصال غير معتمد في إعدادات الخادم.")
         if not upstream_model or len(upstream_model) > 200:
-            raise ValueError(f"السطر {line_number}: معرّف النموذج غير صالح.")
+            raise ValueError(f"السطر {line_number}: معرّف الخدمة غير صالح.")
         if not api_key or len(api_key) > 2000 or "|" in api_key:
             raise ValueError(f"السطر {line_number}: مفتاح API غير صالح.")
         if provider == "google":
             if endpoint not in ("", "-"):
-                raise ValueError(f"السطر {line_number}: استخدم - مكان endpoint لمزود Google GenAI.")
+                raise ValueError(f"السطر {line_number}: استخدم - في حقل الرابط عندما يكون ذلك مطلوباً لنوع الاتصال.")
             endpoint = ""
         else:
             if not endpoint:
-                raise ValueError(f"السطر {line_number}: endpoint مطلوب لهذا المزود.")
+                raise ValueError(f"السطر {line_number}: رابط الخدمة مطلوب لهذا النوع من الاتصال.")
             endpoint = validate_api_route_url(endpoint)
         entries.append({
             "model_id": model_id,
             "provider": provider,
             "base_url": endpoint,
             "upstream_model": upstream_model,
-            "api_key_enc": cipher.encrypt(api_key.encode("utf-8")).decode("ascii"),
+            "api_key_enc": cipher.encrypt(api_key),
         })
         if len(entries) > MAX_API_ROUTES_PER_MODEL:
             raise ValueError(f"يسمح بحد أقصى {MAX_API_ROUTES_PER_MODEL} مسارات API لكل نموذج.")
@@ -823,7 +844,7 @@ def parse_api_route_lines(raw_text, model_id):
 LOGIN_HTML = r"""
 <!doctype html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{{ 'إنشاء حساب' if mode == 'register' else 'تسجيل الدخول' }} · 𝜶lpha</title>
+<title>{{ 'إنشاء حساب' if mode == 'register' else 'تسجيل الدخول' }} · Alpha</title>
 <style>
 *{box-sizing:border-box}body{margin:0;background:#101114;color:#eee;font-family:system-ui;min-height:100vh;display:grid;place-items:center;padding:18px}
 .panel{width:min(100%,420px);background:#191b20;border:1px solid #30323a;border-radius:16px;padding:24px;box-shadow:0 18px 50px #0005}
@@ -849,7 +870,7 @@ a{color:#e5b72f}.flash{padding:10px;border-radius:8px;margin:10px 0;background:#
 ADMIN_HTML = r"""
 <!doctype html><html lang="ar" dir="rtl"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>لوحة المشرف · αlpha</title><style>
+<title>لوحة المشرف · Alpha</title><style>
 *{box-sizing:border-box}body{margin:0;background:#101114;color:#eee;font-family:system-ui}
 header{padding:16px;background:#191b20;border-bottom:1px solid #333;display:flex;justify-content:space-between;gap:12px;align-items:center}
 main{max-width:1100px;margin:auto;padding:16px;display:grid;gap:16px}.panel{background:#191b20;border:1px solid #30323a;padding:16px;border-radius:12px}
@@ -859,69 +880,68 @@ button{padding:11px 15px;background:#e5b72f;color:#111;border:0;border-radius:8p
 a{color:#e5b72f}.flash{padding:10px;border-radius:8px;background:#302a20;margin:8px 0}.tablewrap{overflow:auto}table{width:100%;border-collapse:collapse;min-width:700px}th,td{text-align:right;padding:11px;border-bottom:1px solid #333}small,.subtle{color:#aaa;font-size:13px}.active{color:#8be0a0}.inactive{color:#ffb0a8}.danger{background:#65312c;color:#fff}.actions{display:flex;gap:6px;flex-wrap:wrap}.actions form{margin:0}.route-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.model-panel{background:#14161a;border:1px solid #30323a;border-radius:10px;padding:14px;margin-top:12px}.checkline{display:flex;align-items:center;gap:8px;margin:8px 0}.checkline input{width:auto;margin:0}.help{background:#14161a;border:1px solid #393b44;padding:12px;border-radius:8px;line-height:1.7;overflow-wrap:anywhere}.help code{direction:ltr;display:block;text-align:left;color:#e5d18e;font-size:12px}.status{margin-inline-start:8px;color:#8be0a0}
 @media(max-width:760px){.route-grid{grid-template-columns:1fr}}
 </style></head><body>
-<header><div><b>αlpha AI · لوحة المشرف</b><br><small>مسجّل الدخول: {{ admin_name }}</small></div><a href="{{ url_for('logout') }}">تسجيل الخروج</a></header>
+<header><div><b>Alpha · لوحة المشرف</b><br><small>مسجّل الدخول: {{ admin_name }}</small></div><a href="{{ url_for('logout') }}">تسجيل الخروج</a></header>
 <main>
 {% with messages = get_flashed_messages() %}{% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
-<section class="panel"><h2>مسارات API الاحتياطية لكل مستخدم</h2>
-<p>ترتيب المسارات في الحقول هو ترتيب الأولوية. عند فشل الاتصال أو رجوع خطأ من المزود (مثل 401 أو 429 أو 5xx)، ينتقل الخادم تلقائياً إلى المسار التالي. المفاتيح لا تظهر بعد حفظها.</p>
+<section class="panel"><h2>مسارات الاتصال الاحتياطية لكل مستخدم</h2>
+<p>ترتيب المسارات في الحقول هو ترتيب الأولوية. عند فشل الاتصال أو رجوع خطأ، ينتقل النظام تلقائياً إلى المسار الاحتياطي التالي. المفاتيح لا تظهر بعد حفظها.</p>
 <form method="post" action="{{ url_for('admin_assign_keys') }}">
 <label>اسم المستخدم</label><input name="username" required autocomplete="off" placeholder="username">
 <div class="route-grid">
-<div class="model-panel"><h3>alpha 3.1 max · Qwen</h3><label>مسارات هذا النموذج (سطر لكل API)</label>
-<textarea id="qwenRoutesInput" name="qwen_routes" placeholder="xkiro | https://api.xkiro.com/v1/chat/completions | qwen/qwen3.7-max:free | API_KEY&#10;openai | https://provider.example/v1/chat/completions | provider/model-name | API_KEY"></textarea>
-<button type="button" onclick="testAdminRoutes('qwenRoutesInput','qwenAdminRouteTest','qwen/qwen3.7-max:free')">اختبار مسارات Qwen قبل الحفظ</button><div class="subtle" id="qwenAdminRouteTest" aria-live="polite"></div>
+<div class="model-panel"><h3>Alpha 3.1 Max</h3><label>مسارات هذا الإصدار (سطر لكل اتصال)</label>
+<textarea id="qwenRoutesInput" name="qwen_routes" placeholder="اسم-المزود | https://service.example/v1/chat/completions | معرف-الخدمة | API_KEY"></textarea>
+<button type="button" onclick="testAdminRoutes('qwenRoutesInput','qwenAdminRouteTest','qwen/qwen3.7-max:free')">اختبار مسارات Alpha 3.1 Max قبل الحفظ</button><div class="subtle" id="qwenAdminRouteTest" aria-live="polite"></div>
 <label class="checkline"><input type="checkbox" name="append_qwen" value="1"> إضافة هذه المسارات بعد المسارات الحالية</label>
 <label class="checkline"><input type="checkbox" name="clear_qwen" value="1"> إزالة جميع مسارات هذا النموذج</label>
 </div>
-<div class="model-panel"><h3>alpha 2.7 flash · Gemma</h3><label>مسارات هذا النموذج (سطر لكل API)</label>
-<textarea id="gemmaRoutesInput" name="gemma_routes" placeholder="google | - | gemma-4-26b-a4b-it | GOOGLE_API_KEY&#10;openai | https://provider.example/v1/chat/completions | provider/gemma-model | API_KEY"></textarea>
-<button type="button" onclick="testAdminRoutes('gemmaRoutesInput','gemmaAdminRouteTest','gemma-4-26b-a4b-it')">اختبار مسارات Gemma قبل الحفظ</button><div class="subtle" id="gemmaAdminRouteTest" aria-live="polite"></div>
+<div class="model-panel"><h3>Alpha 2.7 Flash</h3><label>مسارات هذا الإصدار (سطر لكل اتصال)</label>
+<textarea id="gemmaRoutesInput" name="gemma_routes" placeholder="اسم-المزود | - أو رابط الخدمة | معرف-الخدمة | API_KEY"></textarea>
+<button type="button" onclick="testAdminRoutes('gemmaRoutesInput','gemmaAdminRouteTest','gemma-4-26b-a4b-it')">اختبار مسارات Alpha 2.7 Flash قبل الحفظ</button><div class="subtle" id="gemmaAdminRouteTest" aria-live="polite"></div>
 <label class="checkline"><input type="checkbox" name="append_gemma" value="1"> إضافة هذه المسارات بعد المسارات الحالية</label>
 <label class="checkline"><input type="checkbox" name="clear_gemma" value="1"> إزالة جميع مسارات هذا النموذج</label>
 </div></div>
-<button type="submit">حفظ إعدادات API للمستخدم</button>
+<button type="submit">حفظ إعدادات الاتصال لـ Alpha</button>
 </form>
 <div class="help"><b>صيغة المسار:</b>
-<code>provider | endpoint | upstream-model-id | API_KEY</code>
-<b>provider</b> يكون <code>xkiro</code> أو <code>openai</code> أو <code>google</code>. في Google استخدم <code>-</code> بدل endpoint. مسارات <code>xkiro</code> و<code>openai</code> يجب أن تستخدم رابط HTTPS كاملاً لـ Chat Completions. أدخل المسار الأساسي أولاً ثم الاحتياطيات؛ الحد الأقصى 8 مسارات لكل نموذج. إدخال سطور جديدة يستبدل القائمة الحالية افتراضياً؛ فعّل «إضافة» لإلحاق مسارات جديدة دون إعادة إدخال المفاتيح الموجودة. ترك الحقل فارغاً يحافظ على الإعدادات الحالية.</div>
+<code>اسم-المزود | endpoint | معرف-الخدمة | API_KEY</code>
+استخدم بيانات الاتصال المعتمدة في إعدادات الخادم. قد يقبل بعض أنواع الاتصال علامة <code>-</code> بدلاً من الرابط. يجب أن تكون الروابط الخارجية مشفّرة بـ HTTPS. أدخل المسار الأساسي أولاً ثم الاحتياطيات؛ الحد الأقصى 8 مسارات لكل إصدار من Alpha. إدخال سطور جديدة يستبدل القائمة الحالية افتراضياً؛ فعّل «إضافة» لإلحاق مسارات جديدة دون إعادة إدخال المفاتيح الموجودة. ترك الحقل فارغاً يحافظ على الإعدادات الحالية.</div>
 <small>تُشفّر المفاتيح في قاعدة البيانات. لا يرسل الخادم مفاتيح API إلى واجهة المستخدم أو يكشفها في الردود.</small>
 </section>
-<section class="panel"><h2>تعليمات النظام — إعدادات مستقلة لكل نموذج</h2>
-<p>هذه التعليمات محفوظة في قاعدة البيانات ويطبق الخادم تعليمات النموذج المختار فقط. صلاحية القراءة والحفظ للمشرف حصراً.</p>
-<div class="model-panel"><h3>alpha 3.1 max · Qwen</h3>
+<section class="panel"><h2>إعدادات Alpha وتعليماته</h2>
+<p>هذه التعليمات محفوظة في قاعدة البيانات ويطبق النظام إعدادات الإصدار الذي تختاره. صلاحية القراءة والحفظ للمشرف حصراً.</p>
+<div class="model-panel"><h3>Alpha 3.1 Max</h3>
 <textarea id="qwenAdminPrompt" rows="9" style="direction:auto;text-align:right;font-family:inherit">{{ qwen_prompt }}</textarea>
-<button type="button" onclick="saveModelPrompt('qwen/qwen3.7-max:free','qwenAdminPrompt','qwenPromptStatus')">حفظ System Prompt الخاص بـ alpha 3.1 max</button> <span id="qwenPromptStatus" class="status"></span>
+<button type="button" onclick="saveModelPrompt('qwen/qwen3.7-max:free','qwenAdminPrompt','qwenPromptStatus')">حفظ تعليمات Alpha 3.1 Max</button> <span id="qwenPromptStatus" class="status"></span>
 </div>
-<div class="model-panel"><h3>alpha 2.7 flash · Gemma</h3>
+<div class="model-panel"><h3>Alpha 2.7 Flash</h3>
 <textarea id="gemmaAdminPrompt" rows="9" style="direction:auto;text-align:right;font-family:inherit">{{ gemma_prompt }}</textarea>
-<button type="button" onclick="saveModelPrompt('gemma-4-26b-a4b-it','gemmaAdminPrompt','gemmaPromptStatus')">حفظ System Prompt الخاص بـ alpha 2.7 flash</button> <span id="gemmaPromptStatus" class="status"></span>
+<button type="button" onclick="saveModelPrompt('gemma-4-26b-a4b-it','gemmaAdminPrompt','gemmaPromptStatus')">حفظ تعليمات Alpha 2.7 Flash</button> <span id="gemmaPromptStatus" class="status"></span>
 </div>
-<small>حفظ تعليمات نموذج لا يغيّر تعليمات النموذج الآخر، حتى عند استخدام عدة مسارات API للنموذج نفسه.</small>
+<small>حفظ تعليمات إصدار لا يغيّر إعدادات الإصدار الآخر، حتى عند استخدام عدة مسارات اتصال للإصدار نفسه.</small>
 </section>
-<section class="panel"><h2>المستخدمون وحالة مسارات API</h2>
-<div class="tablewrap"><table><thead><tr><th>اسم المستخدم</th><th>تاريخ الإنشاء</th><th>alpha 3.1 max</th><th>alpha 2.7 flash</th><th>إجراءات</th></tr></thead><tbody>
+<section class="panel"><h2>المستخدمون وحالة اتصالات Alpha</h2>
+<div class="tablewrap"><table><thead><tr><th>اسم المستخدم</th><th>تاريخ الإنشاء</th><th>Alpha 3.1 Max</th><th>Alpha 2.7 Flash</th><th>إجراءات</th></tr></thead><tbody>
 {% for u in users %}<tr><td>{{ u.username }}</td><td>{{ u.created_at }}</td>
 <td>{% if u.qwen_count %}<b class="active">{{ u.qwen_count }} مسار</b>{% else %}<b class="inactive">غير مُعدّ</b>{% endif %}</td>
 <td>{% if u.gemma_count %}<b class="active">{{ u.gemma_count }} مسار</b>{% else %}<b class="inactive">غير مُعدّ</b>{% endif %}</td>
 <td><div class="actions">
-{% if u.qwen_count %}<form method="post" action="{{ url_for('admin_revoke_model_key') }}"><input type="hidden" name="username" value="{{ u.username }}"><input type="hidden" name="model" value="qwen/qwen3.7-max:free"><button class="danger" type="submit">إزالة alpha 3.1 max</button></form>{% endif %}
-{% if u.gemma_count %}<form method="post" action="{{ url_for('admin_revoke_model_key') }}"><input type="hidden" name="username" value="{{ u.username }}"><input type="hidden" name="model" value="gemma-4-26b-a4b-it"><button class="danger" type="submit">إزالة alpha 2.7 flash</button></form>{% endif %}
+{% if u.qwen_count %}<form method="post" action="{{ url_for('admin_revoke_model_key') }}"><input type="hidden" name="username" value="{{ u.username }}"><input type="hidden" name="model" value="qwen/qwen3.7-max:free"><button class="danger" type="submit">إزالة Alpha 3.1 Max</button></form>{% endif %}
+{% if u.gemma_count %}<form method="post" action="{{ url_for('admin_revoke_model_key') }}"><input type="hidden" name="username" value="{{ u.username }}"><input type="hidden" name="model" value="gemma-4-26b-a4b-it"><button class="danger" type="submit">إزالة Alpha 2.7 Flash</button></form>{% endif %}
 </div></td></tr>{% else %}<tr><td colspan="5">لا يوجد مستخدمون بعد.</td></tr>{% endfor %}
 </tbody></table></div></section>
 </main>
 <script>
-async function saveModelPrompt(model,textareaId,statusId){const status=document.getElementById(statusId);status.textContent='جارٍ الحفظ...';try{const r=await fetch('/admin/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model,prompt:document.getElementById(textareaId).value})});const d=await r.json();status.textContent=r.ok?'تم حفظ تعليمات هذا النموذج فقط':(d.error||'تعذر الحفظ');}catch(e){status.textContent='تعذر الاتصال بالخادم';}}
+async function saveModelPrompt(model,textareaId,statusId){const status=document.getElementById(statusId);status.textContent='جارٍ الحفظ...';try{const r=await fetch('/admin/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model,prompt:document.getElementById(textareaId).value})});const d=await r.json();status.textContent=r.ok?'تم حفظ تعليمات Alpha المحدد':'تعذر حفظ الإعدادات؛ راجع المدخلات وحاول مجدداً.';}catch(e){status.textContent='تعذر الاتصال بالخادم';}}
 async function testAdminRoutes(inputId,outputId,model){
   const input=document.getElementById(inputId), output=document.getElementById(outputId);
   const raw=input.value.trim();
-  if(!raw){output.textContent='أدخل مسار API واحداً على الأقل أولاً.';return;}
-  output.textContent='جارٍ اختبار المفاتيح والنماذج والاتصال؛ قد يستغرق الاختبار عدة ثوانٍ...';
+  if(!raw){output.textContent='أدخل مسار اتصال واحداً على الأقل أولاً.';return;}
+  output.textContent='جارٍ اختبار اتصالات Alpha؛ قد يستغرق الاختبار عدة ثوانٍ...';
   try{
     const r=await fetch('/admin/api-diagnostics',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model,routes:raw})});
-    const d=await r.json(); if(!r.ok) throw new Error(d.error||'فشل الاختبار');
-    output.textContent=(d.routes||[]).map((x,i)=>`${i+1}. ${x.provider} / ${x.model} · ${x.ok?'✓ يعمل':'✗ فشل'} · أول كلمة: ${Number.isFinite(x.ttft_ms)?x.ttft_ms+' ms':'غير متاح'} · الإجمالي: ${x.latency_ms} ms${x.http_status?' · HTTP '+x.http_status:''}\n${x.message}`).join('\n\n') || 'لم يتم العثور على مسارات.';
-    if(d.note) output.textContent += '\n\n' + d.note;
-  }catch(e){output.textContent='تعذر الاختبار: '+e.message;}
+    const d=await r.json(); if(!r.ok) throw new Error('تعذر اختبار الإعدادات. راجع بيانات الاتصال.');
+    output.textContent=(d.routes||[]).map((x,i)=>`المسار ${i+1} · ${x.ok?'✓ يعمل':'✗ فشل'} · أول كلمة: ${Number.isFinite(x.ttft_ms)?x.ttft_ms+' ms':'غير متاح'} · الإجمالي: ${x.latency_ms} ms${x.http_status?' · HTTP '+x.http_status:''}`).join('\n\n') || 'لم يتم العثور على مسارات.';
+  }catch(e){output.textContent='تعذر اختبار الاتصال. راجع البيانات وحاول مجدداً.';}
 }
 </script></body></html>
 """
@@ -931,7 +951,7 @@ CHAT_HTML = r"""
 <html lang="ar" dir="ltr"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#090a0c">
-<title>αlpha AI — Chat</title>
+<title>Alpha</title>
 <style>
 :root {
       --bg: #090a0c;
@@ -1162,7 +1182,7 @@ CHAT_HTML = r"""
       .model-spark { font-size: 17px; }
     }
 
-    /* αlpha AI application controls and existing chat tools */
+    /* Alpha application controls and existing chat tools */
     .topbar { direction: ltr; }
     .top-title { white-space: nowrap; }
     .tagline { direction: ltr; }
@@ -1233,6 +1253,16 @@ CHAT_HTML = r"""
     .search-sources a { color: #91c5ff; text-decoration: none; }
     .search-sources li { margin: 6px 0; overflow-wrap: anywhere; }
     .review-status { color: #cbd1dc; font-size: 12px; line-height: 1.6; }
+    .project-map-card { margin-top: 11px; padding: 12px; border: 1px solid rgba(98,160,230,.22); border-radius: 13px; background: linear-gradient(145deg, rgba(19,35,54,.92), rgba(17,21,29,.96)); color: #dce7f5; direction: auto; text-align: start; }
+    .project-map-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 7px; }
+    .project-map-title { display: flex; align-items: center; gap: 8px; color: #f2f6fc; font-size: 13px; font-weight: 700; }
+    .project-map-summary { color: #bdc9d8; font-size: 11px; line-height: 1.7; }
+    .project-map-stats { display: flex; flex-wrap: wrap; gap: 6px; margin: 9px 0; }
+    .project-map-stat { padding: 4px 8px; border: 1px solid rgba(150,190,230,.16); border-radius: 99px; color: #cfe3fa; background: rgba(75,125,180,.11); font-size: 10px; }
+    .project-map-section { margin-top: 8px; }
+    .project-map-section summary { cursor: pointer; color: #9cc9fa; font-size: 11px; font-weight: 600; }
+    .project-map-list { margin: 6px 0 0; padding-inline-start: 18px; color: #aebdce; font-size: 10px; line-height: 1.7; overflow-wrap: anywhere; }
+    .project-map-warning { margin-top: 8px; color: #e9ce8c; font-size: 10px; line-height: 1.6; }
     .diff-wrap { padding: 0; overflow: hidden; }
     .diff-wrap summary { padding: 11px 13px; background: rgba(32,37,47,.9); }
     .diff-content { padding: 10px; max-height: 390px; overflow: auto; direction: ltr; text-align: left; background: #0b0e13; font: 11px/1.6 ui-monospace, monospace; white-space: pre; }
@@ -1283,6 +1313,47 @@ CHAT_HTML = r"""
     .alpha-thinking-eyes i { width: 36%; height: 100%; background: #1a1a1a; border-radius: 28% / 16%; }
     .alpha-thinking-label { color: #aeb6c2; font-size: 11px; white-space: nowrap; }
     .diagnostics-output { display: none; margin: 7px 9px 3px; padding: 9px 10px; border: 1px solid rgba(255,255,255,.1); border-radius: 9px; color: #cbd1dc; font-size: 11px; line-height: 1.7; white-space: pre-wrap; direction: rtl; }
+    /* Optional Developer Studio: user-controlled, off by default. */
+    .studio-anchor { position: relative; }
+    .studio-control { border-color: rgba(115,178,255,.2); color: #c8dcf7; }
+    .studio-control.active { color: #d7eaff; border-color: rgba(115,178,255,.5); background: rgba(70,130,210,.13); }
+    .studio-count { min-width: 20px; padding: 2px 6px; border-radius: 99px; background: rgba(255,255,255,.09); color: #aeb8c6; font-size: 10px; text-align: center; }
+    .studio-menu {
+      position: absolute; z-index: 24; right: 0; bottom: calc(100% + 10px);
+      width: min(560px, calc(100vw - 32px)); max-height: min(72vh, 650px); overflow: auto;
+      display: none; padding: 14px; border: 1px solid rgba(115,178,255,.22); border-radius: 18px;
+      background: linear-gradient(145deg, #171d27, #11151c 72%); box-shadow: 0 22px 65px rgba(0,0,0,.66);
+      direction: rtl; text-align: right;
+    }
+    .studio-menu.open { display: block; animation: menuIn .16s ease-out; }
+    .studio-head { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:2px 2px 10px; }
+    .studio-title { display:flex; align-items:center; gap:9px; color:#eef5ff; font-size:14px; font-weight:750; }
+    .studio-title-mark { width:31px; height:31px; display:grid; place-items:center; border:1px solid rgba(115,178,255,.23); border-radius:10px; background:rgba(70,130,210,.14); color:#9ccaff; }
+    .studio-title-mark svg { width:18px; height:18px; }
+    .studio-subtitle { margin:0 2px 12px; color:#98a5b6; font-size:11px; line-height:1.65; }
+    .studio-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+    .studio-tool {
+      width:100%; min-height:105px; display:flex; align-items:flex-start; gap:10px; padding:11px;
+      border:1px solid rgba(255,255,255,.09); border-radius:13px; background:rgba(255,255,255,.025);
+      color:#d7dee9; text-align:right; cursor:pointer; transition:background .16s,border-color .16s,transform .16s;
+    }
+    .studio-tool:hover { border-color:rgba(115,178,255,.28); background:rgba(255,255,255,.045); transform:translateY(-1px); }
+    .studio-tool[aria-pressed="true"] { border-color:rgba(115,178,255,.55); background:rgba(70,130,210,.12); }
+    .studio-tool-icon { flex:0 0 31px; width:31px; height:31px; display:grid; place-items:center; border-radius:9px; background:rgba(255,255,255,.06); color:#9ccaff; font-size:15px; }
+    .studio-tool-copy { display:block; min-width:0; flex:1; }
+    .studio-tool-name { display:flex; align-items:center; justify-content:space-between; gap:7px; font-size:12px; font-weight:700; color:#e8edf5; }
+    .studio-tool-desc { display:block; margin-top:5px; color:#98a5b6; font-size:10px; line-height:1.55; }
+    .studio-tool-switch { flex:0 0 29px; width:29px; height:17px; margin-top:2px; padding:2px; border-radius:99px; background:#414956; transition:background .16s; }
+    .studio-tool-switch::after { content:""; display:block; width:13px; height:13px; border-radius:50%; background:#dce3ec; transition:transform .16s; }
+    .studio-tool[aria-pressed="true"] .studio-tool-switch { background:#4b83bf; }
+    .studio-tool[aria-pressed="true"] .studio-tool-switch::after { transform:translateX(12px); background:#fff; }
+    .studio-footer { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-top:12px; padding-top:10px; border-top:1px solid rgba(255,255,255,.08); }
+    .studio-footer-note { color:#8793a4; font-size:10px; line-height:1.5; }
+    .studio-actions { display:flex; gap:7px; }
+    .studio-action { border:1px solid rgba(115,178,255,.2); border-radius:9px; padding:7px 10px; background:rgba(70,130,210,.1); color:#c9e0ff; font-size:10px; cursor:pointer; }
+    .studio-action.muted { border-color:rgba(255,255,255,.1); background:rgba(255,255,255,.04); color:#b7c0ce; }
+    @media(max-width:560px) { .studio-grid { grid-template-columns:1fr; } .studio-tool { min-height:82px; } .studio-menu { right:0; left:auto; width:calc(100vw - 28px); } }
+    .studio-menu[hidden] { display:none !important; }
     .diagnostics-output.visible { display: block; }
     .diagnostic-ok { color: #86efac; } .diagnostic-bad { color: #fca5a5; }
     .message.error { border-color: rgba(248,113,113,.3); color: #fecaca; }
@@ -1309,7 +1380,7 @@ CHAT_HTML = r"""
   <header class="topbar">
     <div class="top-left">
       <div class="brand-mark" aria-hidden="true"></div>
-      <div class="top-title">αlpha AI</div>
+      <div class="top-title">Alpha</div>
       <div class="top-divider"></div>
       <div class="tagline">{{ username }} · {{ 'المسارات مفعّلة' if subscription_active else 'يلزم تفعيل API' }}</div>
     </div>
@@ -1327,29 +1398,29 @@ CHAT_HTML = r"""
     </div>
   </header>
   <div class="watermark" aria-hidden="true"></div>
-  {% if not subscription_active %}<div class="api-warning">لا توجد مسارات API مفعّلة لحسابك. اطلب من المشرف تفعيل أحد النموذجين من لوحة الإدارة.</div>{% endif %}
+  {% if not subscription_active %}<div class="api-warning">لا توجد مسارات اتصال مفعّلة لحسابك. اطلب من المشرف تفعيل أحد إصدارات Alpha من لوحة الإدارة.</div>{% endif %}
   <section class="conversation" id="conversation" aria-live="polite" aria-label="المحادثة">
-    <div class="typing-indicator" id="typing" hidden role="status" aria-live="polite"><span class="alpha-thinking-loader" role="status" aria-live="polite"><span class="alpha-thinking-cell"><span class="alpha-thinking-cube" id="alphaThinkingCube"><svg viewBox="0 0 100 88" aria-hidden="true"><defs><linearGradient id="alphaThinkingGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFBC6"/><stop offset="1" stop-color="#FFF59D"/></linearGradient></defs><polygon id="alphaThinkingShape" fill="url(#alphaThinkingGradient)" stroke="url(#alphaThinkingGradient)" stroke-width="14" stroke-linejoin="round"/></svg><span class="alpha-thinking-eyes" id="alphaThinkingEyes"><i></i><i></i></span></span></span><span class="alpha-thinking-label">αlpha يفكر...</span></div>
+    <div class="typing-indicator" id="typing" hidden role="status" aria-live="polite"><span class="alpha-thinking-loader" role="status" aria-live="polite"><span class="alpha-thinking-cell"><span class="alpha-thinking-cube" id="alphaThinkingCube"><svg viewBox="0 0 100 88" aria-hidden="true"><defs><linearGradient id="alphaThinkingGradient" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFFBC6"/><stop offset="1" stop-color="#FFF59D"/></linearGradient></defs><polygon id="alphaThinkingShape" fill="url(#alphaThinkingGradient)" stroke="url(#alphaThinkingGradient)" stroke-width="14" stroke-linejoin="round"/></svg><span class="alpha-thinking-eyes" id="alphaThinkingEyes"><i></i><i></i></span></span></span><span class="alpha-thinking-label">Alpha يفكر...</span></div>
   </section>
   <div class="composer-wrap">
     <section class="composer" aria-label="مربع الرسالة">
       <div class="control-row">
         <div style="position:relative">
           <button class="control model-control" id="modelBtn" type="button" aria-expanded="false" aria-haspopup="dialog">
-            <span class="model-spark">✦</span><span id="modelName">alpha 3.1 max</span>
+            <span class="model-spark">✦</span><span id="modelName">Alpha 3.1 Max</span>
             <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
           </button>
           <div class="model-menu" id="modelMenu" role="dialog" aria-label="إعدادات النموذج">
             <div class="menu-heading">اختر النموذج</div>
-            <button class="model-option selected" type="button" data-model="qwen/qwen3.7-max:free" aria-pressed="true">alpha 3.1 max <span class="selected-mark">✓</span></button>
-            <button class="model-option" type="button" data-model="gemma-4-26b-a4b-it" aria-pressed="false">alpha 2.7 flash <span class="selected-mark">✓</span></button>
+            <button class="model-option selected" type="button" data-model="qwen/qwen3.7-max:free" aria-pressed="true">Alpha 3.1 Max <span class="selected-mark">✓</span></button>
+            <button class="model-option" type="button" data-model="gemma-4-26b-a4b-it" aria-pressed="false">Alpha 2.7 Flash <span class="selected-mark">✓</span></button>
             <div class="menu-separator"></div>
             <div class="menu-heading">إعدادات الاستجابة</div>
             <button class="setting-row" id="qwenThinkingToggle" type="button" aria-pressed="false">
               <span class="setting-name"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5A3.5 3.5 0 0 0 5.5 8c0 .5.1 1 .3 1.4A3.7 3.7 0 0 0 5 16.6 3.4 3.4 0 0 0 9 20V4.5ZM15 4.5A3.5 3.5 0 0 1 18.5 8c0 .5-.1 1 .3 1.4a3.7 3.7 0 0 1 .8 7.2A3.4 3.4 0 0 1 15 20V4.5Z"/></svg>عرض الاستدلال إن توفر</span>
               <span class="setting-switch" aria-hidden="true"></span>
             </button>
-            <label class="setting-field" id="gemmaThinkingField" hidden>مستوى التفكير في alpha 2.7 flash
+            <label class="setting-field" id="gemmaThinkingField" hidden>مستوى التفكير في Alpha 2.7 Flash
               <select class="menu-select" id="thinking"><option value="minimal" selected>الحد الأدنى — أسرع</option><option value="high">مرتفع — تفكير أعمق</option></select>
             </label>
             <button class="setting-row" id="webToggle" type="button" aria-pressed="false">
@@ -1359,7 +1430,7 @@ CHAT_HTML = r"""
             <label class="setting-field">دورات فحص الكود تلقائياً
               <select class="menu-select" id="reviewCycles"><option value="0" selected>إيقاف — أسرع رد</option><option value="1">دورة واحدة</option><option value="2">دورتان</option><option value="3">3 دورات</option><option value="4">4 دورات</option><option value="5">5 دورات</option></select>
             </label>
-            <button class="setting-row" id="diagnosticsBtn" type="button"><span class="setting-name">فحص الاتصال والسرعة</span><span class="tool-text">فحص</span></button>
+            <button class="setting-row" id="diagnosticsBtn" type="button"><span class="setting-name">فحص اتصالات Alpha وسرعتها</span><span class="tool-text">فحص</span></button>
             <div class="diagnostics-output" id="diagnosticsOutput" aria-live="polite"></div>
             <button class="menu-done" id="menuDone" type="button">تم</button>
           </div>
@@ -1367,11 +1438,36 @@ CHAT_HTML = r"""
         <button class="control" id="unlazyToggle" type="button" aria-pressed="false" title="تشغيل أو إيقاف مهارة UNLAZY">
           <span class="model-spark">✦</span><span>UNLAZY</span><span class="tool-text" id="unlazyState">OFF</span>
         </button>
+        <div class="studio-anchor">
+          <button class="control studio-control" id="studioBtn" type="button" aria-expanded="false" aria-controls="studioMenu" aria-haspopup="dialog" title="إعداد أدوات البرمجة الاختيارية">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m14.7 6.3 3 3M4 20l4.5-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.5 16 4 20Z"/><path d="M13 4 20 11"/></svg>
+            <span>استوديو البرمجة</span><span class="studio-count" id="studioCount">0/6</span>
+          </button>
+          <section class="studio-menu" id="studioMenu" role="dialog" aria-label="استوديو أدوات البرمجة" hidden>
+            <div class="studio-head">
+              <div class="studio-title"><span class="studio-title-mark"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m14.7 6.3 3 3M4 20l4.5-1 10.8-10.8a2.1 2.1 0 0 0-3-3L5.5 16 4 20Z"/><path d="M13 4 20 11"/></svg></span>استوديو البرمجة</div>
+              <span class="studio-count" id="studioState">كل الأدوات متوقفة</span>
+            </div>
+            <p class="studio-subtitle">اختر الأدوات التي تريد استخدامها مع رسالتك. جميعها اختيارية ومتوقفة افتراضياً، ولا تقوم بتعديل ملفاتك أو تشغيل أوامر تلقائياً.</p>
+            <div class="studio-grid">
+              <button class="studio-tool" type="button" data-coding-tool="project_map" aria-pressed="false"><span class="studio-tool-icon">⌘</span><span class="studio-tool-copy"><span class="studio-tool-name">خريطة المشروع</span><span class="studio-tool-desc">عند تفعيلها، تفحص بنية الأرشيف والملفات المرفقة وتعرض شجرة المشروع وعلاقاته المحتملة.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="impact_analysis" aria-pressed="false"><span class="studio-tool-icon">⇄</span><span class="studio-tool-copy"><span class="studio-tool-name">تحليل تأثير التعديل</span><span class="studio-tool-desc">يحدد الملفات والوظائف المتأثرة ومخاطر كسر الميزات السابقة.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="test_plan" aria-pressed="false"><span class="studio-tool-icon">✓</span><span class="studio-tool-copy"><span class="studio-tool-name">خطة الاختبارات</span><span class="studio-tool-desc">يقترح اختبارات وأوامر تحقق، ولا يشغّلها أو يدّعي تنفيذها.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="patch_review" aria-pressed="false"><span class="studio-tool-icon">Δ</span><span class="studio-tool-copy"><span class="studio-tool-name">مراجعة التغييرات</span><span class="studio-tool-desc">يركز على أصغر تعديل مطلوب ويعرض الملفات والفروقات المقترحة بوضوح.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="log_doctor" aria-pressed="false"><span class="studio-tool-icon">⌁</span><span class="studio-tool-copy"><span class="studio-tool-name">طبيب السجلات</span><span class="studio-tool-desc">يحلل الأخطاء وTraceback والسجلات المرفقة ويبحث عن السبب الجذري.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+              <button class="studio-tool" type="button" data-coding-tool="security_review" aria-pressed="false"><span class="studio-tool-icon">◈</span><span class="studio-tool-copy"><span class="studio-tool-name">مراجعة الأمان</span><span class="studio-tool-desc">يراجع المصادقة والصلاحيات والتحقق من المدخلات وحماية الأسرار.</span></span><span class="studio-tool-switch" aria-hidden="true"></span></button>
+            </div>
+            <div class="studio-footer">
+              <span class="studio-footer-note">يُحفظ اختيارك على هذا المتصفح، ويُرسل فقط مع الرسائل التالية.</span>
+              <div class="studio-actions"><button class="studio-action muted" id="studioDisableAll" type="button">إيقاف الكل</button><button class="studio-action" id="studioEnableAll" type="button">تفعيل الكل</button><button class="studio-action muted" id="studioDone" type="button">تم</button></div>
+            </div>
+          </section>
+        </div>
       </div>
       <input id="fileInput" type="file" multiple>
       <div id="attachmentPreview" aria-live="polite"></div>
       <form class="input-row" id="chatForm">
-        <textarea class="prompt" id="prompt" rows="1" placeholder="اكتب رسالتك إلى αlpha AI..." aria-label="رسالتك" {{ '' if subscription_active else 'disabled' }}></textarea>
+        <textarea class="prompt" id="prompt" rows="1" placeholder="اكتب رسالتك إلى Alpha..." aria-label="رسالتك" {{ '' if subscription_active else 'disabled' }}></textarea>
         <button class="control attach-btn" id="attachBtn" type="button" title="إرفاق ملفات وصور" aria-label="إرفاق ملفات وصور" {{ '' if subscription_active else 'disabled' }}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.1-8.5 8.5a5.5 5.5 0 0 1-7.8-7.8l9.2-9.2a3.7 3.7 0 0 1 5.2 5.2l-9.2 9.2a1.9 1.9 0 0 1-2.6-2.6l8.5-8.5"/></svg>
         </button>
@@ -1411,7 +1507,7 @@ document.querySelectorAll('.model-option').forEach(button => {
       option.classList.toggle('selected', selected);
       option.setAttribute('aria-pressed', String(selected));
     });
-    el('modelName').textContent = currentModel === QWEN_MODEL ? 'alpha 3.1 max' : 'alpha 2.7 flash';
+    el('modelName').textContent = currentModel === QWEN_MODEL ? 'Alpha 3.1 Max' : 'Alpha 2.7 Flash';
     syncModelSettings();
   });
 });
@@ -1427,6 +1523,58 @@ el('unlazyToggle').addEventListener('click', () => {
   el('unlazyState').textContent = active ? 'ON' : 'OFF';
   el('unlazyToggle').classList.toggle('active', active);
 });
+const CODING_TOOL_KEYS = ['project_map','impact_analysis','test_plan','patch_review','log_doctor','security_review'];
+const CODING_TOOL_STORAGE_KEY = 'alpha.codingTools.v1:' + {{ username|tojson }};
+let codingToolState = Object.fromEntries(CODING_TOOL_KEYS.map(key => [key, false]));
+try {
+  const saved = JSON.parse(localStorage.getItem(CODING_TOOL_STORAGE_KEY) || '{}');
+  CODING_TOOL_KEYS.forEach(key => { codingToolState[key] = saved[key] === true; });
+} catch (_) {}
+function saveCodingToolState() {
+  try { localStorage.setItem(CODING_TOOL_STORAGE_KEY, JSON.stringify(codingToolState)); }
+  catch (_) { el('status').textContent = 'تعذر حفظ تفضيلات استوديو البرمجة على هذا المتصفح.'; }
+}
+function renderCodingToolState() {
+  const enabled = CODING_TOOL_KEYS.filter(key => codingToolState[key]);
+  document.querySelectorAll('[data-coding-tool]').forEach(button => {
+    const key = button.dataset.codingTool;
+    const active = codingToolState[key] === true;
+    button.setAttribute('aria-pressed', String(active));
+  });
+  el('studioCount').textContent = enabled.length + '/6';
+  el('studioState').textContent = enabled.length === 0 ? 'كل الأدوات متوقفة' : (enabled.length === 1 ? 'أداة واحدة مفعّلة' : enabled.length + ' أدوات مفعّلة');
+  el('studioBtn').classList.toggle('active', enabled.length > 0);
+}
+function closeStudioMenu() {
+  el('studioMenu').classList.remove('open'); el('studioMenu').hidden = true;
+  el('studioBtn').setAttribute('aria-expanded', 'false');
+}
+el('studioBtn').addEventListener('click', event => {
+  event.stopPropagation();
+  const open = el('studioMenu').hidden;
+  el('studioMenu').hidden = !open;
+  el('studioMenu').classList.toggle('open', open);
+  el('studioBtn').setAttribute('aria-expanded', String(open));
+  closeModelMenu(); el('historyMenu').classList.remove('open');
+});
+document.querySelectorAll('[data-coding-tool]').forEach(button => {
+  button.addEventListener('click', () => {
+    const key = button.dataset.codingTool;
+    if (!CODING_TOOL_KEYS.includes(key)) return;
+    codingToolState[key] = !codingToolState[key];
+    saveCodingToolState(); renderCodingToolState();
+  });
+});
+el('studioEnableAll').addEventListener('click', () => {
+  CODING_TOOL_KEYS.forEach(key => { codingToolState[key] = true; });
+  saveCodingToolState(); renderCodingToolState();
+});
+el('studioDisableAll').addEventListener('click', () => {
+  CODING_TOOL_KEYS.forEach(key => { codingToolState[key] = false; });
+  saveCodingToolState(); renderCodingToolState();
+});
+el('studioDone').addEventListener('click', closeStudioMenu);
+renderCodingToolState();
 function syncModelSettings() {
   const qwen = currentModel === QWEN_MODEL;
   el('qwenThinkingToggle').hidden = !qwen;
@@ -1442,9 +1590,10 @@ el('historyBtn').addEventListener('click', event => {
 document.addEventListener('click', event => {
   if (!el('modelMenu').contains(event.target) && !el('modelBtn').contains(event.target)) closeModelMenu();
   if (!el('historyMenu').contains(event.target) && !el('historyBtn').contains(event.target)) el('historyMenu').classList.remove('open');
+  if (!el('studioMenu').contains(event.target) && !el('studioBtn').contains(event.target)) closeStudioMenu();
 });
 document.addEventListener('keydown', event => {
-  if (event.key === 'Escape') { closeModelMenu(); el('historyMenu').classList.remove('open'); }
+  if (event.key === 'Escape') { closeModelMenu(); closeStudioMenu(); el('historyMenu').classList.remove('open'); }
 });
 
 function addMessageNode(role, text) {
@@ -1601,6 +1750,63 @@ function addSearchSources(parent, search) {
   if (typeof search.remaining_today === 'number') { const remaining = document.createElement('small'); remaining.textContent = ' · المتبقي اليوم: ' + search.remaining_today; box.appendChild(remaining); }
   parent.appendChild(box);
 }
+function addProjectMapCard(parent, report) {
+  if (!report || typeof report !== 'object') return;
+  const card = document.createElement('section'); card.className = 'project-map-card';
+  const head = document.createElement('div'); head.className = 'project-map-head';
+  const title = document.createElement('div'); title.className = 'project-map-title'; title.textContent = '⌘ خريطة مشروع Alpha';
+  const state = document.createElement('span'); state.className = 'project-map-stat';
+  const stateLabels = {
+    analyzed: 'تم الفحص الساكن', no_project_files: 'بانتظار ملفات المشروع',
+    no_supported_files: 'لا توجد ملفات قابلة للفهرسة', invalid_archive: 'الأرشيف غير صالح',
+    analysis_error: 'تعذر إعداد الخريطة'
+  };
+  state.textContent = stateLabels[report.status] || 'فحص محدود';
+  head.append(title, state); card.appendChild(head);
+  const summary = document.createElement('div'); summary.className = 'project-map-summary';
+  summary.textContent = report.summary || 'لا تتوفر تفاصيل إضافية.'; card.appendChild(summary);
+  const stats = document.createElement('div'); stats.className = 'project-map-stats';
+  [
+    ['الملفات', report.file_count], ['الملفات البرمجية', report.source_count],
+    ['العلاقات الداخلية', Array.isArray(report.connections) ? report.connections.length : 0],
+    ['المستثناة', report.skipped_count]
+  ].forEach(([label, value]) => {
+    const chip = document.createElement('span'); chip.className = 'project-map-stat';
+    chip.textContent = label + ': ' + (Number.isFinite(Number(value)) ? Number(value) : 0); stats.appendChild(chip);
+  });
+  card.appendChild(stats);
+  const addList = (label, values, formatter) => {
+    if (!Array.isArray(values) || !values.length) return;
+    const details = document.createElement('details'); details.className = 'project-map-section';
+    const summaryNode = document.createElement('summary'); summaryNode.textContent = label + ' (' + values.length + ')'; details.appendChild(summaryNode);
+    const list = document.createElement('ul'); list.className = 'project-map-list';
+    values.slice(0, 30).forEach(value => { const li = document.createElement('li'); li.textContent = formatter(value); list.appendChild(li); });
+    details.appendChild(list); card.appendChild(details);
+  };
+  addList('اللغات', report.languages, item => item.name + ' · ' + item.count);
+  addList('نقاط الدخول المحتملة', report.entrypoints, value => value);
+  addList('هيكل المجلدات', report.tree, value => value);
+  addList('ملفات المشروع', report.files, value => value);
+  addList('العلاقات المكتشفة', report.connections, item => item.from + ' ← ' + item.to + ' عبر ' + item.via);
+  addList('مسارات الويب', report.routes, item => item.file + ': ' + (item.routes || []).join(' · '));
+  if (Array.isArray(report.warnings) && report.warnings.length) {
+    const warning = document.createElement('div'); warning.className = 'project-map-warning';
+    warning.textContent = 'ملاحظات: ' + report.warnings.slice(0, 8).join(' · '); card.appendChild(warning);
+  }
+  const footer = document.createElement('div'); footer.className = 'project-map-warning';
+  footer.textContent = 'تحليل ساكن للملفات المرفقة فقط؛ لم يتم تشغيل الشيفرة أو تعديل الملفات.'; card.appendChild(footer);
+  parent.appendChild(card);
+}
+function addCodingToolsStatus(parent, toolKeys) {
+  if (!Array.isArray(toolKeys) || !toolKeys.length) return;
+  const labels = {
+    project_map: 'خريطة المشروع', impact_analysis: 'تحليل التأثير', test_plan: 'خطة الاختبارات',
+    patch_review: 'مراجعة التغييرات', log_doctor: 'طبيب السجلات', security_review: 'مراجعة الأمان'
+  };
+  const box = document.createElement('div'); box.className = 'review-status coding-tools-status';
+  box.textContent = 'أدوات البرمجة المفعّلة لهذه الرسالة: ' + toolKeys.map(key => labels[key]).filter(Boolean).join(' · ');
+  parent.appendChild(box);
+}
 function addReviewStatus(parent, review) {
   if (!review || review.status === 'no_code' || review.status === 'skipped') return;
   const box = document.createElement('div'); box.className = 'review-status';
@@ -1611,7 +1817,7 @@ function addReviewStatus(parent, review) {
   } else if (review.status === 'failed') box.textContent = 'الفحص التلقائي لم يكتمل: ' + (review.notice || 'تعذرت مراجعة الكود');
   parent.appendChild(box);
 }
-function showTyping(label = 'αlpha يفكر...') {
+function showTyping(label = 'Alpha يفكر...') {
   const text = el('typing').querySelector('.alpha-thinking-label');
   if (text) text.textContent = label;
   el('typing').hidden = false;
@@ -1720,6 +1926,7 @@ async function sendMsg() {
   if (!subscriptionActive) { el('status').textContent = 'لا توجد مسارات API مفعّلة لحسابك.'; return; }
   const isQwen = currentModel === QWEN_MODEL;
   const selectedForSend = selectedFiles.slice();
+  const codingToolsForSend = CODING_TOOL_KEYS.filter(key => codingToolState[key]);
   const visibleMessage = message + (selectedForSend.length ? '\n\n📎 ' + selectedForSend.map(file => file.name).join(' · ') : '');
   el('prompt').value = ''; el('prompt').style.height = 'auto';
   addMessageNode('user', visibleMessage || '(ملفات مرفقة)');
@@ -1742,11 +1949,12 @@ async function sendMsg() {
     form.append('web_search', String(isQwen && el('webToggle').getAttribute('aria-pressed') === 'true'));
     form.append('review_cycles', String(Number(el('reviewCycles').value || 0)));
     form.append('unlazy', String(el('unlazyToggle').getAttribute('aria-pressed') === 'true'));
+    form.append('coding_tools', JSON.stringify(codingToolsForSend));
     selectedForSend.forEach(file => form.append('files', file, file.name));
     const response = await fetch('/chat', {method: 'POST', body: form, headers: {'Accept': 'text/event-stream'}});
     await readSSE(response, (eventName, data) => {
       if (eventName === 'status') {
-        showTyping(data.label || 'αlpha يفكر...');
+        showTyping(data.label || 'Alpha يفكر...');
         el('status').textContent = data.message || 'النموذج يعمل...';
       } else if (eventName === 'reset') {
         streamedText = '';
@@ -1779,6 +1987,8 @@ async function sendMsg() {
     if (isQwen && el('qwenThinkingToggle').getAttribute('aria-pressed') === 'true' && finalData.reasoning) addReasoning(answerNodeFinal, finalData.reasoning);
     addSearchSources(answerNodeFinal, finalData.web_search);
     addReviewStatus(answerNodeFinal, finalData.code_review);
+    addProjectMapCard(answerNodeFinal, finalData.project_map);
+    addCodingToolsStatus(answerNodeFinal, finalData.coding_tools || codingToolsForSend);
     addDiffViewer(answerNodeFinal, finalData.code_diff);
     const elapsed = (performance.now() - startedAt) / 1000;
     const ttft = firstTokenAt === null ? 'غير متاح' : ((firstTokenAt - startedAt) / 1000).toFixed(2) + ' ث';
@@ -1799,7 +2009,7 @@ async function sendMsg() {
     el('send').disabled = !subscriptionActive; el('attachBtn').disabled = !subscriptionActive;
   }
 }
-el('chatForm').addEventListener('submit', event => { event.preventDefault(); closeModelMenu(); sendMsg(); });
+el('chatForm').addEventListener('submit', event => { event.preventDefault(); closeModelMenu(); closeStudioMenu(); sendMsg(); });
 el('prompt').addEventListener('input', () => { el('prompt').style.height = 'auto'; el('prompt').style.height = Math.min(el('prompt').scrollHeight, 180) + 'px'; });
 el('prompt').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); el('chatForm').requestSubmit(); }
@@ -2655,7 +2865,7 @@ def xkiro_web_search(api_key, query):
             return {
                 "status": "quota_exhausted" if response.status_code == 402 else "rate_limited",
                 "results": [], "remaining_today": None,
-                "notice": "لم يكتمل البحث على الويب بسبب الحصة أو حدود الاستخدام في Xkiro. أُكملت الإجابة دون نتائج مباشرة.",
+                "notice": "لم يكتمل البحث المباشر بسبب حدود الاستخدام. أُكملت الإجابة دون نتائج مباشرة.",
             }, ""
         return {
             "status": "unavailable", "results": [], "remaining_today": None,
@@ -2967,7 +3177,8 @@ def chat():
         return jsonify(error="إعداد التفكير غير صالح"), 400
     include_reasoning = str(data.get("include_reasoning", "false")).lower() in ("true", "1", "yes", "on")
     unlazy_enabled = str(data.get("unlazy", "false")).lower() in ("true", "1", "yes", "on")
-    prompt = build_effective_system_prompt(get_model_prompt(model), unlazy_enabled)
+    coding_tools = parse_coding_tool_flags(data.get("coding_tools", "[]"))
+    prompt = build_effective_system_prompt(get_model_prompt(model), unlazy_enabled, coding_tools)
     try:
         review_cycles = int(data.get("review_cycles", 0))
     except (TypeError, ValueError):
@@ -2978,7 +3189,7 @@ def chat():
     web_search_enabled = is_qwen and str(data.get("web_search", "false")).lower() in ("true", "1", "yes", "on")
     xkiro_key = next((route["api_key"] for route in api_routes if route["provider"] == "xkiro"), None) if web_search_enabled else None
     if web_search_enabled and not xkiro_key:
-        return jsonify(error="Web Search يحتاج مسار Xkiro ضمن مسارات alpha 3.1 max. أضفه من لوحة المشرف."), 403
+        return jsonify(error="البحث المباشر يحتاج إعداد اتصال مناسب في لوحة المشرف."), 403
 
     # Snapshot uploads while the request is alive. FileStorage streams owned by
     # request.files may be closed as soon as this view returns to start SSE.
@@ -3006,6 +3217,28 @@ def chat():
                 request_message = message.strip()
                 if attachment_labels:
                     request_message = (request_message + "\n\n[المرفقات الحالية: " + "، ".join(attachment_labels) + "]").strip()
+
+                # Project Intelligence runs only when the user explicitly enables
+                # the Project Map tool for this turn. It reads uploaded bytes
+                # statically; it never extracts archives to disk or executes code.
+                project_map = None
+                if "project_map" in coding_tools:
+                    emit("status", {"label": "جارٍ إعداد خريطة مشروع Alpha...", "message": "فحص ساكن لبنية الملفات المرفقة دون تشغيلها"})
+                    try:
+                        project_map = analyze_project_attachments(uploaded_file_snapshots)
+                        project_map_context = format_project_map_context(project_map)
+                        if project_map_context:
+                            request_message += "\n\n" + project_map_context
+                    except Exception as map_exc:
+                        project_map = {
+                            "status": "analysis_error",
+                            "title": "خريطة مشروع Alpha",
+                            "summary": "تعذر إعداد الخريطة؛ يمكنك متابعة المحادثة دونها.",
+                            "warnings": [f"تعذر الفحص ({type(map_exc).__name__})."],
+                            "file_count": 0, "source_count": 0, "languages": [],
+                            "entrypoints": [], "files": [], "python_modules": [],
+                            "connections": [], "routes": [], "skipped_count": 0,
+                        }
                 if upload_notices:
                     request_message += "\n\n[ملاحظات حول المرفقات]\n" + "\n".join(upload_notices)
                 if uploaded_parts:
@@ -3044,7 +3277,7 @@ def chat():
 
                 model_parts = [{"text": request_message}] + uploaded_parts
                 contents = user_history + [{"role": "user", "parts": model_parts}]
-                emit("status", {"label": "αlpha يفكر...", "message": "بانتظار أول جزء من الإجابة"})
+                emit("status", {"label": "Alpha يفكر...", "message": "بانتظار أول جزء من الإجابة"})
                 generation_started = time.perf_counter()
                 answer, reasoning, usage, selected_route_index = generate_with_api_failover(
                     api_routes, contents, prompt, model, thinking,
@@ -3081,6 +3314,8 @@ def chat():
                     "web_search": web_search_result, "code_review": code_review,
                     "code_diff": code_diff, "attachments": attachment_labels,
                     "upload_notices": upload_notices, "unlazy_enabled": unlazy_enabled,
+                    "coding_tools": coding_tools,
+                    "project_map": project_map,
                     "api_route_index": selected_route_index, "api_route_count": len(api_routes),
                     "generation_ms": generation_ms,
                 })
@@ -3092,7 +3327,7 @@ def chat():
                         safe_error = safe_error.replace(secret, "[مخفي]")
                 safe_error = safe_error[:900]
                 app.logger.warning("Chat stream failed for model %s (%s): %s", model, type(exc).__name__, safe_error)
-                emit("error", {"error": safe_error or "تعذر إكمال الطلب."})
+                emit("error", {"error": "تعذر إكمال الطلب. راجع إعدادات Alpha وحاول مجدداً."})
             finally:
                 event_queue.put(None)
 
