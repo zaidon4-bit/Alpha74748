@@ -895,42 +895,42 @@ def validate_api_route_url(value):
 
 
 def parse_api_route_lines(raw_text, model_id):
-    """Parse admin-only route entries: provider | endpoint | upstream model | API key."""
+    """Parse API keys only; model/provider/endpoints are fixed by the real model ID."""
     if not isinstance(raw_text, str) or len(raw_text) > 40_000:
         raise ValueError("إعدادات API أطول من الحد المسموح.")
+
+    # Keep the real upstream model IDs separate from the user-facing Alpha labels.
+    if model_id == QWEN_MODEL:
+        preset = {
+            "provider": "xkiro",
+            "base_url": QWEN_BASE_URL,
+            "upstream_model": QWEN_MODEL,
+        }
+    elif model_id == LONG_MODEL:
+        preset = {
+            "provider": "google",
+            "base_url": "",
+            "upstream_model": LONG_MODEL,
+        }
+    else:
+        raise ValueError("معرّف النموذج غير معتمد في إعدادات API.")
+
     entries = []
     for line_number, raw_line in enumerate(raw_text.splitlines(), 1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
+        api_key = raw_line.strip()
+        if not api_key or api_key.startswith("#"):
             continue
-        pieces = [piece.strip() for piece in line.split("|")]
-        if len(pieces) != 4:
-            raise ValueError(f"السطر {line_number}: استخدم الصيغة: اسم المزود | رابط الخدمة | معرف الخدمة | مفتاح الاتصال.")
-        provider, endpoint, upstream_model, api_key = pieces
-        provider = provider.lower()
-        if provider not in ("xkiro", "openai", "google"):
-            raise ValueError(f"السطر {line_number}: اسم جهة الاتصال غير معتمد في إعدادات الخادم.")
-        if not upstream_model or len(upstream_model) > 200:
-            raise ValueError(f"السطر {line_number}: معرّف الخدمة غير صالح.")
-        if not api_key or len(api_key) > 2000 or "|" in api_key:
-            raise ValueError(f"السطر {line_number}: مفتاح API غير صالح.")
-        if provider == "google":
-            if endpoint not in ("", "-"):
-                raise ValueError(f"السطر {line_number}: استخدم - في حقل الرابط عندما يكون ذلك مطلوباً لنوع الاتصال.")
-            endpoint = ""
-        else:
-            if not endpoint:
-                raise ValueError(f"السطر {line_number}: رابط الخدمة مطلوب لهذا النوع من الاتصال.")
-            endpoint = validate_api_route_url(endpoint)
+        if "|" in api_key or len(api_key) > 2000:
+            raise ValueError(f"السطر {line_number}: ضع مفتاح API فقط، مفتاحاً واحداً في كل سطر.")
         entries.append({
             "model_id": model_id,
-            "provider": provider,
-            "base_url": endpoint,
-            "upstream_model": upstream_model,
+            "provider": preset["provider"],
+            "base_url": preset["base_url"],
+            "upstream_model": preset["upstream_model"],
             "api_key_enc": cipher.encrypt(api_key),
         })
         if len(entries) > MAX_API_ROUTES_PER_MODEL:
-            raise ValueError(f"يسمح بحد أقصى {MAX_API_ROUTES_PER_MODEL} مسارات API لكل نموذج.")
+            raise ValueError(f"يسمح بحد أقصى {MAX_API_ROUTES_PER_MODEL} مفاتيح API لكل إصدار من Alpha.")
     return entries
 
 
@@ -998,28 +998,30 @@ button{padding:10px 14px;background:linear-gradient(110deg,#0d9df2,#347dff);colo
 <header><div><b>Alpha · لوحة المشرف</b><br><small>مسجّل الدخول: {{ admin_name }}</small></div><a href="{{ url_for('logout') }}">تسجيل الخروج</a></header>
 <main>
 {% with messages = get_flashed_messages() %}{% for message in messages %}<div class="flash">{{ message }}</div>{% endfor %}{% endwith %}
-<section class="panel"><h2>مسارات الاتصال الاحتياطية لكل مستخدم</h2>
-<p>ترتيب المسارات في الحقول هو ترتيب الأولوية. عند فشل الاتصال أو رجوع خطأ، ينتقل النظام تلقائياً إلى المسار الاحتياطي التالي. المفاتيح لا تظهر بعد حفظها.</p>
+<section class="panel"><h2>مفاتيح API لكل إصدار من Alpha</h2>
+<p>أدخل مفتاح API فقط؛ إعدادات الاتصال ومعرّف النموذج مجهّزان مسبقاً داخل Alpha. ضع كل مفتاح في سطر مستقل، ويمكنك إضافة عدة مفاتيح كمسارات احتياطية.</p>
 <form method="post" action="{{ url_for('admin_assign_keys') }}">
 <label>اسم المستخدم</label><input name="username" required autocomplete="off" placeholder="username">
 <div class="route-grid">
-<div class="model-panel"><h3>Alpha 3.1 Max</h3><label>مسارات هذا الإصدار (سطر لكل اتصال)</label>
-<textarea id="qwenRoutesInput" name="qwen_routes" placeholder="اسم-المزود | https://service.example/v1/chat/completions | معرف-الخدمة | API_KEY"></textarea>
-<button type="button" onclick="testAdminRoutes('qwenRoutesInput','qwenAdminRouteTest','qwen/qwen3.7-max:free')">اختبار مسارات Alpha 3.1 Max قبل الحفظ</button><div class="subtle" id="qwenAdminRouteTest" aria-live="polite"></div>
-<label class="checkline"><input type="checkbox" name="append_qwen" value="1"> إضافة هذه المسارات بعد المسارات الحالية</label>
-<label class="checkline"><input type="checkbox" name="clear_qwen" value="1"> إزالة جميع مسارات هذا النموذج</label>
+<div class="model-panel"><h3>Alpha 3.1 Max</h3><label>مفاتيح API (مفتاح واحد في كل سطر)</label>
+<textarea id="qwenRoutesInput" name="qwen_routes" placeholder="ألصق مفتاح xKiro API هنا؛ ضع كل مفتاح في سطر مستقل"></textarea>
+<button type="button" onclick="testAdminRoutes('qwenRoutesInput','qwenAdminRouteTest','qwen/qwen3.7-max:free')">اختبار مفاتيح Alpha 3.1 Max قبل الحفظ</button><div class="subtle" id="qwenAdminRouteTest" aria-live="polite"></div>
+<label class="checkline"><input type="checkbox" name="append_qwen" value="1"> إضافة المفاتيح إلى المفاتيح الحالية</label>
+<label class="checkline"><input type="checkbox" name="clear_qwen" value="1"> إزالة جميع مفاتيح هذا النموذج</label>
 </div>
-<div class="model-panel"><h3>Alpha 2.7 Flash</h3><label>مسارات هذا الإصدار (سطر لكل اتصال)</label>
-<textarea id="gemmaRoutesInput" name="gemma_routes" placeholder="اسم-المزود | - أو رابط الخدمة | معرف-الخدمة | API_KEY"></textarea>
-<button type="button" onclick="testAdminRoutes('gemmaRoutesInput','gemmaAdminRouteTest','gemma-4-26b-a4b-it')">اختبار مسارات Alpha 2.7 Flash قبل الحفظ</button><div class="subtle" id="gemmaAdminRouteTest" aria-live="polite"></div>
-<label class="checkline"><input type="checkbox" name="append_gemma" value="1"> إضافة هذه المسارات بعد المسارات الحالية</label>
-<label class="checkline"><input type="checkbox" name="clear_gemma" value="1"> إزالة جميع مسارات هذا النموذج</label>
+<div class="model-panel"><h3>Alpha 2.7 Flash</h3><label>مفاتيح API (مفتاح واحد في كل سطر)</label>
+<textarea id="gemmaRoutesInput" name="gemma_routes" placeholder="ألصق مفتاح Google API هنا؛ ضع كل مفتاح في سطر مستقل"></textarea>
+<button type="button" onclick="testAdminRoutes('gemmaRoutesInput','gemmaAdminRouteTest','gemma-4-26b-a4b-it')">اختبار مفاتيح Alpha 2.7 Flash قبل الحفظ</button><div class="subtle" id="gemmaAdminRouteTest" aria-live="polite"></div>
+<label class="checkline"><input type="checkbox" name="append_gemma" value="1"> إضافة المفاتيح إلى المفاتيح الحالية</label>
+<label class="checkline"><input type="checkbox" name="clear_gemma" value="1"> إزالة جميع مفاتيح هذا النموذج</label>
 </div></div>
-<button type="submit">حفظ إعدادات الاتصال لـ Alpha</button>
+<button type="submit">حفظ مفاتيح API لـ Alpha</button>
 </form>
-<div class="help"><b>صيغة المسار:</b>
-<code>اسم-المزود | endpoint | معرف-الخدمة | API_KEY</code>
-استخدم بيانات الاتصال المعتمدة في إعدادات الخادم. قد يقبل بعض أنواع الاتصال علامة <code>-</code> بدلاً من الرابط. يجب أن تكون الروابط الخارجية مشفّرة بـ HTTPS. أدخل المسار الأساسي أولاً ثم الاحتياطيات؛ الحد الأقصى 8 مسارات لكل إصدار من Alpha. إدخال سطور جديدة يستبدل القائمة الحالية افتراضياً؛ فعّل «إضافة» لإلحاق مسارات جديدة دون إعادة إدخال المفاتيح الموجودة. ترك الحقل فارغاً يحافظ على الإعدادات الحالية.</div>
+<div class="help"><b>طريقة الإدخال:</b>
+<code>API_KEY_1
+API_KEY_2
+API_KEY_3</code>
+لا تحتاج إلى إدخال اسم المزود أو endpoint أو معرّف النموذج. يضبط Alpha اتصال إصدار Alpha 3.1 Max على xKiro ومعرّفه الحقيقي، واتصال Alpha 2.7 Flash على Google ومعرّفه الحقيقي تلقائياً. كل سطر يمثل مفتاحاً مستقلاً؛ الحد الأقصى 8 مفاتيح لكل إصدار. إدخال مفاتيح جديدة يستبدل القائمة الحالية افتراضياً؛ فعّل «إضافة» لإلحاقها دون إعادة إدخال المفاتيح الموجودة. ترك الحقل فارغاً يحافظ على الإعدادات الحالية.</div>
 <small>تُشفّر المفاتيح في قاعدة البيانات. لا يرسل الخادم مفاتيح API إلى واجهة المستخدم أو يكشفها في الردود.</small>
 </section>
 <section class="panel"><h2>إعدادات Alpha وتعليماته</h2>
