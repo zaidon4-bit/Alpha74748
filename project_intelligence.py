@@ -378,3 +378,84 @@ def format_project_map_context(report: dict[str, Any]) -> str:
         lines.append("حدود وملاحظات الفحص: " + "؛ ".join(report["warnings"][:12]))
     lines.append("لا تعتبر هذه الخريطة دليلاً على صحة التنفيذ أو اكتمال العلاقات؛ اطلب مراجعة الملفات الفعلية عند الحاجة.")
     return "\n".join(lines)[:MAX_REPORT_CHARS]
+
+
+def normalize_ai_plan(parsed: Any, fallback_text: str = "") -> dict[str, Any]:
+    """Validate model-produced plan/graph data for safe SVG rendering; never execute model output."""
+    if not isinstance(parsed, dict):
+        stages = [
+            {"title": "فهم الطلب", "details": "استخراج الهدف والمتطلبات من نص المستخدم.", "deliverable": "ملخص المتطلبات"},
+            {"title": "تصميم التدفق", "details": "ترتيب الخطوات والقرارات والعلاقات بينها.", "deliverable": "مخطط سير بصري"},
+            {"title": "بناء الحل ومراجعته", "details": "إعداد المخرجات ومراجعة اكتمالها مقابل الطلب.", "deliverable": "نتيجة قابلة للمراجعة"},
+        ]
+        nodes = [{"id": "start", "label": "البداية", "type": "start"}]
+        for index, stage in enumerate(stages, 1):
+            nodes.append({"id": f"stage_{index}", "label": stage["title"], "type": "process"})
+        nodes.append({"id": "finish", "label": "النهاية", "type": "end"})
+        edges = [{"from": nodes[index]["id"], "to": nodes[index + 1]["id"]} for index in range(len(nodes) - 1)]
+        return {
+            "structured": False,
+            "title": "خطة Project Intelligence",
+            "summary": "لم تُرجع المسودة تنسيق الخطة المنظم؛ عُرض نصها مع مسار عمل عام، وليس تحليلاً لملفات غير مرفقة.",
+            "stages": stages,
+            "diagram": {"nodes": nodes, "edges": edges},
+            "answer": str(fallback_text or "")[:24000],
+        }
+
+    raw_stages = parsed.get("stages")
+    clean_stages = []
+    if isinstance(raw_stages, list):
+        for item in raw_stages[:8]:
+            if not isinstance(item, dict):
+                continue
+            clean_stages.append({
+                "title": str(item.get("title", "مرحلة"))[:140],
+                "details": str(item.get("details", ""))[:700],
+                "deliverable": str(item.get("deliverable", ""))[:300],
+            })
+    if not clean_stages:
+        clean_stages = [
+            {"title": "تحليل المتطلبات", "details": "تحديد ما يطلبه المستخدم والقيود الأساسية.", "deliverable": "قائمة متطلبات"},
+            {"title": "تصميم الحل", "details": "تنظيم المكونات والعلاقات وخطوات التشغيل.", "deliverable": "خريطة تدفق"},
+            {"title": "مراجعة النتيجة", "details": "التأكد من تغطية المطلوب وذكر ما لم يتم التحقق منه.", "deliverable": "نتيجة موثقة"},
+        ]
+
+    raw_diagram = parsed.get("diagram") if isinstance(parsed.get("diagram"), dict) else {}
+    raw_nodes = raw_diagram.get("nodes") if isinstance(raw_diagram.get("nodes"), list) else []
+    raw_edges = raw_diagram.get("edges") if isinstance(raw_diagram.get("edges"), list) else []
+    valid_ids: set[str] = set()
+    clean_nodes = []
+    allowed_types = {"start", "process", "decision", "data", "end"}
+    for node in raw_nodes[:14]:
+        if not isinstance(node, dict):
+            continue
+        node_id = str(node.get("id", ""))[:32]
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,32}", node_id) or node_id in valid_ids:
+            continue
+        valid_ids.add(node_id)
+        node_type = str(node.get("type", "process")).lower()
+        if node_type not in allowed_types:
+            node_type = "process"
+        clean_nodes.append({"id": node_id, "label": str(node.get("label", "خطوة"))[:70], "type": node_type})
+    clean_edges = []
+    for edge in raw_edges[:24]:
+        if not isinstance(edge, dict):
+            continue
+        source, target = str(edge.get("from", "")), str(edge.get("to", ""))
+        if source in valid_ids and target in valid_ids and source != target:
+            clean_edges.append({"from": source, "to": target})
+    if len(clean_nodes) < 2:
+        clean_nodes = [{"id": "start", "label": "البداية", "type": "start"}]
+        for index, stage in enumerate(clean_stages[:6], start=1):
+            clean_nodes.append({"id": f"stage_{index}", "label": stage["title"], "type": "process"})
+        clean_nodes.append({"id": "finish", "label": "النهاية", "type": "end"})
+        clean_edges = [{"from": clean_nodes[index]["id"], "to": clean_nodes[index + 1]["id"]}
+                       for index in range(len(clean_nodes) - 1)]
+    return {
+        "structured": True,
+        "title": str(parsed.get("title", "خطة Project Intelligence"))[:140],
+        "summary": str(parsed.get("summary", ""))[:1000],
+        "stages": clean_stages,
+        "diagram": {"nodes": clean_nodes, "edges": clean_edges},
+        "answer": str(parsed.get("answer", ""))[:24000],
+    }
