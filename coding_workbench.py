@@ -176,8 +176,10 @@ def build_structured_response_instruction(enabled: bool) -> str:
         "[ALPHA STRUCTURED RESPONSE CARD — REQUIRED FOR THIS TURN]\n"
         "Alongside your normal helpful Arabic answer, finish with exactly one fenced block labelled alpha-plan. "
         "The block must contain valid JSON only, using this schema: "
-        '{"title":"عنوان قصير","summary":"ملخص واضح","stages":[{"title":"اسم المرحلة","details":"ما الذي سيحدث","deliverable":"الناتج المتوقع"}]}. '
-        "Use 1–6 stages. This block is rendered by Alpha as a visual plan card, not shown as raw code. "
+        '{"title":"عنوان قصير","summary":"ملخص واضح","stages":[{"title":"اسم المرحلة","details":"ما الذي سيحدث","deliverable":"الناتج المتوقع"}],"diagram":{"nodes":[{"id":"start","label":"البداية","type":"start"},{"id":"step1","label":"معالجة الطلب","type":"process"},{"id":"end","label":"النهاية","type":"end"}],"edges":[{"from":"start","to":"step1"},{"from":"step1","to":"end"}]}}. '
+        "Use 1–6 stages and include a real process-flow graph with 3–14 nodes and valid directed edges. "
+        "The graph must show start, important processing steps, decisions/data when relevant, and end. Do not use ASCII art. "
+        "This block is rendered by Alpha as a visual plan card with an SVG diagram, not shown as raw code. "
         "Build the plan from the current message and available conversation context; no upload is required. "
         "For ordinary conversation, keep it brief and natural (one stage is enough when appropriate); do not invent project files, "
         "repository structure, test results, or completed actions. If no project files are attached, describe a task/workflow map, "

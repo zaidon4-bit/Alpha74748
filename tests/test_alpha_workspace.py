@@ -5,6 +5,7 @@ import unittest
 from alpha_workspace import (
     ProjectArchiveError,
     static_check_project_zip,
+    static_check_generated_files,
     prepare_patched_archive,
 )
 
@@ -37,6 +38,42 @@ class AlphaWorkspaceTests(unittest.TestCase):
         result = static_check_project_zip(archive)
         self.assertEqual(result["failed"], 1)
         self.assertFalse(result["checks"][0]["ok"])
+
+    def test_generated_files_receive_static_checks_without_execution(self):
+        result = static_check_generated_files([
+            {"path": "main.py", "content": "def main():\n    return 1\n"},
+            {"path": "config.json", "content": '{"enabled": true}'},
+            {"path": "broken.py", "content": "def bad(:\n    pass\n"},
+        ])
+        self.assertEqual(result["mode"], "static_only")
+        self.assertEqual(result["passed"], 2)
+        self.assertEqual(result["failed"], 1)
+        self.assertIn("لم يتم تشغيل", result["notice"])
+
+    def test_generated_file_checker_rejects_unsafe_paths(self):
+        with self.assertRaises(ProjectArchiveError):
+            static_check_generated_files([{"path": "../escape.py", "content": "pass"}])
+
+    def test_generated_file_checker_rejects_secrets_and_binary_content(self):
+        for path in (".env", "service-account.json", ".aws/credentials", "keys/private.pem"):
+            with self.subTest(path=path):
+                with self.assertRaises(ProjectArchiveError):
+                    static_check_generated_files([{"path": path, "content": "secret"}])
+        with self.assertRaises(ProjectArchiveError):
+            static_check_generated_files([{"path": "image.png", "content": b"\x89PNG\x00binary"}])
+
+    def test_generated_file_checker_handles_unsupported_text_and_duplicates(self):
+        result = static_check_generated_files([
+            {"path": "README.md", "content": "hello"},
+            {"path": "app.py", "content": "print('ok')"},
+        ])
+        self.assertEqual(result["passed"], 1)
+        self.assertEqual(result["scanned"], 1)
+        with self.assertRaises(ProjectArchiveError):
+            static_check_generated_files([
+                {"path": "app.py", "content": "pass"},
+                {"path": "app.py", "content": "pass"},
+            ])
 
     def test_patch_preview_and_apply_only_changes_requested_existing_file(self):
         original = make_zip({"app.py": 'print("hello")\nprint("old")\nprint("bye")\n', "keep.txt": "keep\n"})
@@ -82,6 +119,18 @@ class AlphaWorkspaceTests(unittest.TestCase):
             archive.writestr("../outside.py", "print('bad')")
         with self.assertRaises(ProjectArchiveError):
             static_check_project_zip(buf.getvalue())
+
+    def test_static_checker_skips_cloud_credentials_and_private_directories(self):
+        archive = make_zip({
+            ".aws/credentials": "aws_secret_access_key=do-not-read",
+            ".ssh/id_ed25519": "private-key",
+            "secrets/service-account.json": '{"private_key":"do-not-read"}',
+            "src/app.py": "print('safe')",
+        })
+        result = static_check_project_zip(archive)
+        self.assertEqual(result["scanned"], 1)
+        self.assertGreaterEqual(result["skipped"], 3)
+        self.assertNotIn("do-not-read", str(result["checks"]))
 
     def test_patch_rejects_sensitive_and_generated_paths(self):
         archive = make_zip({

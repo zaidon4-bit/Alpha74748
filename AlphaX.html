@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <meta name="theme-color" content="#0b0d14" />
-  <title>{% if mode == 'register' %}Create Account{% else %}Log In{% endif %} · AlphaX</title>
+  <title>AlphaX</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
     :root {
@@ -141,17 +141,6 @@
     }
     .submit:hover { filter: brightness(1.08); box-shadow: 0 10px 24px rgba(82,127,240,.24); }
     .submit:active { transform: scale(.985); }
-    .flash-message {
-      margin: 0 0 18px;
-      padding: 11px 13px;
-      border: 1px solid rgba(98,140,255,.28);
-      border-radius: 9px;
-      background: rgba(98,140,255,.09);
-      color: #dce6ff;
-      font-size: 12px;
-      line-height: 1.6;
-      overflow-wrap: anywhere;
-    }
     @media (max-width: 420px) {
       body { padding: 16px; }
       .auth { padding: 32px 23px 25px; }
@@ -166,25 +155,15 @@
   <main class="auth">
     <h1 class="brand">Alpha<span>X</span></h1>
 
-    <div class="tabs{% if mode == 'register' %} register{% endif %}" id="tabs" role="tablist" aria-label="Authentication">
-      <button class="tab{% if mode != 'register' %} active{% endif %}" id="loginTab" type="button" role="tab" aria-selected="{{ 'true' if mode != 'register' else 'false' }}">Log In</button>
-      <button class="tab{% if mode == 'register' %} active{% endif %}" id="registerTab" type="button" role="tab" aria-selected="{{ 'true' if mode == 'register' else 'false' }}">Create Account</button>
+    <div class="tabs" id="tabs" role="tablist" aria-label="Authentication">
+      <button class="tab active" id="loginTab" type="button" role="tab" aria-selected="true">Log In</button>
+      <button class="tab" id="registerTab" type="button" role="tab" aria-selected="false">Create Account</button>
       <span class="underline" aria-hidden="true"></span>
     </div>
 
-    {% with messages = get_flashed_messages() %}
-      {% if messages %}
-        <div class="flash-messages" role="status" aria-live="polite">
-          {% for message in messages %}
-            <p class="flash-message">{{ message }}</p>
-          {% endfor %}
-        </div>
-      {% endif %}
-    {% endwith %}
-
     <div class="viewport">
-      <div class="track{% if mode == 'register' %} register{% endif %}" id="track">
-        <form id="loginForm" action="{{ url_for('login_post') }}" method="post" autocomplete="on">
+      <div class="track" id="track">
+        <form id="loginForm" autocomplete="on">
           <div class="field">
             <label for="loginUsername">Username</label>
             <input id="loginUsername" name="username" type="text" placeholder="Enter username" autocomplete="username" required />
@@ -196,18 +175,18 @@
           <button class="submit" type="submit">Log In</button>
         </form>
 
-        <form id="registerForm" action="{{ url_for('register') }}" method="post" autocomplete="on">
+        <form id="registerForm" autocomplete="on">
           <div class="field">
             <label for="registerUsername">Username</label>
-            <input id="registerUsername" name="username" type="text" placeholder="Choose username" autocomplete="username" minlength="3" maxlength="32" required />
+            <input id="registerUsername" name="username" type="text" placeholder="Choose username" autocomplete="username" required />
           </div>
           <div class="field">
             <label for="registerPassword">Password</label>
-            <input id="registerPassword" name="password" type="password" placeholder="Create password" autocomplete="new-password" minlength="8" required />
+            <input id="registerPassword" name="password" type="password" placeholder="Create password" autocomplete="new-password" required />
           </div>
           <div class="field">
             <label for="confirmPassword">Confirm Password</label>
-            <input id="confirmPassword" name="confirmPassword" type="password" placeholder="Confirm password" autocomplete="new-password" minlength="8" required />
+            <input id="confirmPassword" name="confirmPassword" type="password" placeholder="Confirm password" autocomplete="new-password" required />
           </div>
           <button class="submit" type="submit">Create Account</button>
         </form>
@@ -233,17 +212,14 @@
     loginTab.addEventListener('click', () => setMode(false));
     registerTab.addEventListener('click', () => setMode(true));
 
-    
+    document.getElementById('loginForm').addEventListener('submit', event => event.preventDefault());
     document.getElementById('registerForm').addEventListener('submit', event => {
+      event.preventDefault();
       const password = document.getElementById('registerPassword').value;
-      const confirmInput = document.getElementById('confirmPassword');
-      if (password !== confirmInput.value) {
-        event.preventDefault();
-        confirmInput.setCustomValidity('Passwords do not match');
-        confirmInput.reportValidity();
-      } else {
-        confirmInput.setCustomValidity('');
-      }
+      const confirm = document.getElementById('confirmPassword').value;
+      if (password !== confirm) document.getElementById('confirmPassword').setCustomValidity('Passwords do not match');
+      else document.getElementById('confirmPassword').setCustomValidity('');
+      event.currentTarget.reportValidity();
     });
     document.getElementById('confirmPassword').addEventListener('input', event => event.target.setCustomValidity(''));
   </script>

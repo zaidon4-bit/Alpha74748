@@ -57,6 +57,9 @@ class CodingWorkbenchTests(unittest.TestCase):
         instruction = build_structured_response_instruction(True)
         self.assertIn("alpha-plan", instruction)
         self.assertIn("no upload is required", instruction)
+        self.assertIn('"diagram"', instruction)
+        self.assertIn("real process-flow graph", instruction)
+        self.assertIn("Do not use ASCII art", instruction)
         self.assertEqual(build_structured_response_instruction(False), "")
 
     def test_ignores_vague_or_unsubstantiated_warnings(self):

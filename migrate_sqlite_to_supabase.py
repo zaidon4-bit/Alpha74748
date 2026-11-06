@@ -14,7 +14,7 @@ try:
 except ImportError as exc:  # pragma: no cover - exercised on user's machine
     raise SystemExit("Missing dependency. Run: python -m pip install 'psycopg[binary]'") from exc
 
-QWEN_MODEL = "qwen/qwen3.7-max:free"
+DEEPSEEK_MODEL = "deepseek-v4.1-flash:free"
 GEMMA_MODEL = "gemma-4-26b-a4b-it"
 
 
@@ -165,9 +165,9 @@ def migrate(source_path: Path) -> dict[str, int]:
                 mapped_user_id = user_id_map.get(old_user_id)
                 if mapped_user_id is None:
                     continue
+                # Old Xkiro credentials are not valid Token Harbor credentials.
+                # Only the unchanged Google model can be restored from its legacy key column.
                 legacy_routes = (
-                    (QWEN_MODEL, "xkiro", "https://api.xkiro.com/v1/chat/completions", QWEN_MODEL,
-                     value(old, user_cols, "xkiro_api_key_enc")),
                     (GEMMA_MODEL, "google", "", GEMMA_MODEL,
                      value(old, user_cols, "google_api_key_enc") or value(old, user_cols, "api_key_enc")),
                 )

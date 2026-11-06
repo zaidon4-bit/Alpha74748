@@ -20,7 +20,15 @@ MAX_TOTAL_UNCOMPRESSED = 48 * 1024 * 1024
 MAX_MEMBER_BYTES = 4 * 1024 * 1024
 MAX_PATCH_BYTES = 512 * 1024
 SKIP_PARTS = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
-SECRET_NAMES = {".env", ".env.local", ".env.production", "id_rsa", "id_ed25519", "credentials.json", ".api_encryption.key", ".flask_secret_key", "app.db"}
+SECRET_NAMES = {
+    ".env", ".env.local", ".env.production", "id_rsa", "id_ed25519",
+    "credentials.json", "service-account.json", "secrets.json", "token.json",
+    ".npmrc", ".pypirc", ".netrc", ".api_encryption.key", ".flask_secret_key",
+    "app.db", "database.db", "known_hosts", "authorized_keys",
+}
+SECRET_DIRS = {".aws", ".ssh", ".gnupg", ".config", "secrets", "private", "credentials"}
+SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".keystore", ".jks"}
+SECRET_HINTS = ("service-account", "credential", "secret", "private_key", "secret_key", "token_store")
 
 
 class ProjectArchiveError(ValueError):
@@ -60,9 +68,15 @@ def _open_checked_archive(raw: bytes):
             archive.close()
             raise ProjectArchiveError("يحتوي الأرشيف على أسماء ملفات مكررة.")
         seen.add(info.filename)
+        if info.flag_bits & 0x1:
+            archive.close()
+            raise ProjectArchiveError("الأرشيف يحتوي ملفاً مشفراً لا يمكن فحصه بأمان.")
         if info.file_size > MAX_MEMBER_BYTES:
             archive.close()
             raise ProjectArchiveError(f"الملف {PurePosixPath(info.filename).name} أكبر من الحد الآمن.")
+        if info.file_size and (info.compress_size == 0 or info.file_size / max(info.compress_size, 1) > 200):
+            archive.close()
+            raise ProjectArchiveError("الأرشيف يحتوي ملفاً بنسبة ضغط غير آمنة.")
         total += info.file_size
         if total > MAX_TOTAL_UNCOMPRESSED:
             archive.close()
@@ -85,7 +99,14 @@ def static_check_project_zip(raw: bytes) -> dict:
             if info.is_dir():
                 continue
             path = PurePosixPath(info.filename)
-            if any(part in SKIP_PARTS for part in path.parts) or path.name in SECRET_NAMES:
+            lowered_parts = {part.lower() for part in path.parts}
+            lower_name = path.name.lower()
+            if (any(part.lower() in SKIP_PARTS for part in path.parts)
+                    or any(part in SECRET_DIRS for part in lowered_parts)
+                    or lower_name in SECRET_NAMES
+                    or PurePosixPath(lower_name).suffix in SECRET_SUFFIXES
+                    or any(hint in lower_name for hint in SECRET_HINTS)
+                    or (lower_name.startswith(".env") and lower_name not in {".env.example", ".env.sample", ".env.template"})):
                 skipped.append(path.as_posix())
                 continue
             suffix = path.suffix.lower()
@@ -123,6 +144,79 @@ def static_check_project_zip(raw: bytes) -> dict:
     }
 
 
+def static_check_generated_files(files) -> dict:
+    """Validate generated text files without importing or executing their contents."""
+    if not isinstance(files, (list, tuple)):
+        raise ProjectArchiveError("قائمة الملفات الناتجة غير صالحة.")
+    if len(files) > 300:
+        raise ProjectArchiveError("عدد الملفات الناتجة يتجاوز الحد المسموح.")
+    checks, seen = [], set()
+    total_bytes = 0
+    supported = {".py", ".pyw", ".json", ".html", ".htm"}
+    for item in files:
+        if not isinstance(item, dict):
+            raise ProjectArchiveError("صيغة أحد الملفات الناتجة غير صالحة.")
+        raw_path = item.get("path")
+        if not isinstance(raw_path, str) or not _safe_member_name(raw_path):
+            raise ProjectArchiveError("يحتوي أحد الملفات الناتجة على مسار غير آمن.")
+        path = PurePosixPath(raw_path)
+        normalized = path.as_posix()
+        if normalized in seen:
+            raise ProjectArchiveError("توجد أسماء ملفات مكررة ضمن النتائج.")
+        seen.add(normalized)
+        lower_parts = {part.lower() for part in path.parts}
+        lower_name = path.name.lower()
+        if (any(part.lower() in SKIP_PARTS for part in path.parts)
+                or any(part in SECRET_DIRS for part in lower_parts)
+                or lower_name in SECRET_NAMES
+                or path.suffix.lower() in SECRET_SUFFIXES
+                or any(hint in lower_name for hint in SECRET_HINTS)
+                or (lower_name.startswith(".env") and lower_name not in {".env.example", ".env.sample", ".env.template"})):
+            raise ProjectArchiveError("لا يُسمح بفحص أو تضمين ملف حساس ضمن النتائج.")
+        content = item.get("content", "")
+        if isinstance(content, bytes):
+            raw = content
+            try:
+                text = raw.decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise ProjectArchiveError("الملفات الثنائية غير مدعومة في الفحص الساكن.") from exc
+        elif isinstance(content, str):
+            text = content
+            raw = text.encode("utf-8")
+        else:
+            raise ProjectArchiveError("محتوى الملف الناتج يجب أن يكون نصاً أو UTF-8.")
+        if b"\x00" in raw:
+            raise ProjectArchiveError("تم رفض ملف يحتوي بيانات ثنائية.")
+        if len(raw) > MAX_MEMBER_BYTES:
+            raise ProjectArchiveError("أحد الملفات الناتجة يتجاوز الحد الأقصى للحجم.")
+        total_bytes += len(raw)
+        if total_bytes > MAX_TOTAL_UNCOMPRESSED:
+            raise ProjectArchiveError("الحجم الإجمالي للملفات الناتجة يتجاوز الحد المسموح.")
+        suffix = path.suffix.lower()
+        if suffix not in supported:
+            continue
+        try:
+            if suffix in {".py", ".pyw"}:
+                ast.parse(text, filename=normalized)
+                kind, message = "Python", "صياغة Python سليمة."
+            elif suffix == ".json":
+                json.loads(text)
+                kind, message = "JSON", "بنية JSON سليمة."
+            else:
+                parser = _HTMLCounter(convert_charrefs=True)
+                parser.feed(text)
+                parser.close()
+                kind, message = "HTML", "تم تحليل HTML دون أخطاء بنيوية من المحلل."
+            checks.append({"file": normalized, "kind": kind, "ok": True, "message": message})
+        except (SyntaxError, json.JSONDecodeError, ValueError) as exc:
+            checks.append({"file": normalized, "kind": suffix.lstrip("."), "ok": False,
+                           "message": f"{type(exc).__name__}: {str(exc)[:220]}"})
+    passed = sum(1 for item in checks if item["ok"])
+    failed = sum(1 for item in checks if not item["ok"])
+    return {"status": "completed", "mode": "static_only", "scanned": len(checks),
+            "passed": passed, "failed": failed, "checks": checks[:300],
+            "notice": "هذا فحص ساكن للصياغة والتنسيقات فقط؛ لم يتم تشغيل أو استيراد أي كود."}
+
 def _strip_git_prefix(path: str) -> str:
     path = path.strip()
     if path.startswith(("a/", "b/")):
@@ -138,9 +232,11 @@ def _patchable_path(path: str) -> bool:
     if any(part in SKIP_PARTS for part in parsed.parts):
         return False
     name = parsed.name.lower()
-    if name in SECRET_NAMES or name.startswith(".env"):
-        return False
-    if name.endswith((".pem", ".key", ".p12", ".pfx")):
+    lowered_parts = {part.lower() for part in parsed.parts}
+    if (name in SECRET_NAMES or name.startswith(".env")
+            or any(part in SECRET_DIRS for part in lowered_parts)
+            or name.endswith(tuple(SECRET_SUFFIXES))
+            or any(hint in name for hint in SECRET_HINTS)):
         return False
     return True
 

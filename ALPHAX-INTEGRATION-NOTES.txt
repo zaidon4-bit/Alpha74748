@@ -1,0 +1,11 @@
+AlphaX login/register UI integration
+===================================
+
+- The uploaded AlphaX.html has been integrated into the existing Flask LOGIN_HTML template.
+- The original uploaded HTML is also preserved byte-for-byte as AlphaX.html in the project root.
+- Login POSTs to the existing /login endpoint (login_post view).
+- Registration POSTs to the existing /register endpoint.
+- Flask flash messages are rendered inside the new design.
+- Login/register tab selection follows the existing Flask mode (login or register), including validation-error responses.
+- Password confirmation is checked in the browser before registration submission.
+- No other application modules, routes, database logic, models, settings, or tests were changed.
