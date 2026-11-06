@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#0b0d14" />
+  <title>{% if mode == 'register' %}Create Account{% else %}Log In{% endif %} · AlphaX</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap');
+    :root {
+      color-scheme: dark;
+      --bg: #0b0d14;
+      --panel: #111521;
+      --field: #0c101a;
+      --line: #252d40;
+      --text: #f5f7fc;
+      --muted: #8992a5;
+      --accent: #628cff;
+      --accent-2: #8a70ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background:
+        radial-gradient(ellipse at 50% 0%, rgba(83,119,255,.13), transparent 42%),
+        var(--bg);
+      color: var(--text);
+      font-family: Inter, system-ui, sans-serif;
+    }
+    .auth {
+      width: min(100%, 390px);
+      padding: 38px 34px 30px;
+      border: 1px solid rgba(151,166,201,.13);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: 0 24px 70px rgba(0,0,0,.38);
+      animation: appear .45s ease both;
+    }
+    @keyframes appear {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .brand {
+      margin: 0 0 32px;
+      text-align: center;
+      font-size: 37px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: -2px;
+      color: #f7f8ff;
+    }
+    .brand span {
+      color: var(--accent);
+      text-shadow: 0 0 22px rgba(98,140,255,.28);
+    }
+    .tabs {
+      position: relative;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      margin-bottom: 27px;
+      border-bottom: 1px solid var(--line);
+    }
+    .tab {
+      padding: 12px 4px 14px;
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      font: 600 13px Inter, sans-serif;
+      cursor: pointer;
+      transition: color .2s ease;
+    }
+    .tab.active { color: var(--text); }
+    .underline {
+      position: absolute;
+      bottom: -1px;
+      left: 0;
+      width: 50%;
+      height: 2px;
+      border-radius: 2px;
+      background: linear-gradient(90deg, var(--accent), var(--accent-2));
+      transition: transform .28s cubic-bezier(.2,.75,.25,1);
+    }
+    .tabs.register .underline { transform: translateX(100%); }
+    .viewport { overflow: hidden; }
+    .track {
+      display: flex;
+      width: 200%;
+      direction: ltr;
+      transition: transform .34s cubic-bezier(.2,.75,.25,1);
+    }
+    .track.register { transform: translateX(-50%); }
+    form {
+      flex: 0 0 50%;
+      width: 50%;
+      min-width: 0;
+      padding: 1px 1px 3px;
+      direction: ltr;
+    }
+    .field { margin-bottom: 17px; }
+    label {
+      display: block;
+      margin: 0 0 8px;
+      color: #c5ccda;
+      font-size: 12px;
+      font-weight: 600;
+    }
+    input {
+      display: block;
+      width: 100%;
+      height: 47px;
+      padding: 0 14px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      outline: none;
+      background: var(--field);
+      color: var(--text);
+      font: 400 13px Inter, sans-serif;
+      transition: border-color .2s, box-shadow .2s;
+    }
+    input::placeholder { color: #5e687c; }
+    input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(98,140,255,.12);
+    }
+    .submit {
+      width: 100%;
+      height: 47px;
+      margin-top: 4px;
+      border: 0;
+      border-radius: 9px;
+      background: linear-gradient(100deg, #527ff0, #7867ec);
+      color: white;
+      font: 700 13px Inter, sans-serif;
+      cursor: pointer;
+      transition: transform .18s, filter .18s, box-shadow .18s;
+      box-shadow: 0 8px 20px rgba(82,127,240,.16);
+    }
+    .submit:hover { filter: brightness(1.08); box-shadow: 0 10px 24px rgba(82,127,240,.24); }
+    .submit:active { transform: scale(.985); }
+    .flash-message {
+      margin: 0 0 18px;
+      padding: 11px 13px;
+      border: 1px solid rgba(98,140,255,.28);
+      border-radius: 9px;
+      background: rgba(98,140,255,.09);
+      color: #dce6ff;
+      font-size: 12px;
+      line-height: 1.6;
+      overflow-wrap: anywhere;
+    }
+    @media (max-width: 420px) {
+      body { padding: 16px; }
+      .auth { padding: 32px 23px 25px; }
+      .brand { font-size: 34px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <main class="auth">
+    <h1 class="brand">Alpha<span>X</span></h1>
+
+    <div class="tabs{% if mode == 'register' %} register{% endif %}" id="tabs" role="tablist" aria-label="Authentication">
+      <button class="tab{% if mode != 'register' %} active{% endif %}" id="loginTab" type="button" role="tab" aria-selected="{{ 'true' if mode != 'register' else 'false' }}">Log In</button>
+      <button class="tab{% if mode == 'register' %} active{% endif %}" id="registerTab" type="button" role="tab" aria-selected="{{ 'true' if mode == 'register' else 'false' }}">Create Account</button>
+      <span class="underline" aria-hidden="true"></span>
+    </div>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        <div class="flash-messages" role="status" aria-live="polite">
+          {% for message in messages %}
+            <p class="flash-message">{{ message }}</p>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    <div class="viewport">
+      <div class="track{% if mode == 'register' %} register{% endif %}" id="track">
+        <form id="loginForm" action="{{ url_for('login_post') }}" method="post" autocomplete="on">
+          <div class="field">
+            <label for="loginUsername">Username</label>
+            <input id="loginUsername" name="username" type="text" placeholder="Enter username" autocomplete="username" required />
+          </div>
+          <div class="field">
+            <label for="loginPassword">Password</label>
+            <input id="loginPassword" name="password" type="password" placeholder="Enter password" autocomplete="current-password" required />
+          </div>
+          <button class="submit" type="submit">Log In</button>
+        </form>
+
+        <form id="registerForm" action="{{ url_for('register') }}" method="post" autocomplete="on">
+          <div class="field">
+            <label for="registerUsername">Username</label>
+            <input id="registerUsername" name="username" type="text" placeholder="Choose username" autocomplete="username" minlength="3" maxlength="32" required />
+          </div>
+          <div class="field">
+            <label for="registerPassword">Password</label>
+            <input id="registerPassword" name="password" type="password" placeholder="Create password" autocomplete="new-password" minlength="8" required />
+          </div>
+          <div class="field">
+            <label for="confirmPassword">Confirm Password</label>
+            <input id="confirmPassword" name="confirmPassword" type="password" placeholder="Confirm password" autocomplete="new-password" minlength="8" required />
+          </div>
+          <button class="submit" type="submit">Create Account</button>
+        </form>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    const tabs = document.getElementById('tabs');
+    const track = document.getElementById('track');
+    const loginTab = document.getElementById('loginTab');
+    const registerTab = document.getElementById('registerTab');
+
+    function setMode(register) {
+      tabs.classList.toggle('register', register);
+      track.classList.toggle('register', register);
+      loginTab.classList.toggle('active', !register);
+      registerTab.classList.toggle('active', register);
+      loginTab.setAttribute('aria-selected', String(!register));
+      registerTab.setAttribute('aria-selected', String(register));
+    }
+
+    loginTab.addEventListener('click', () => setMode(false));
+    registerTab.addEventListener('click', () => setMode(true));
+
+    
+    document.getElementById('registerForm').addEventListener('submit', event => {
+      const password = document.getElementById('registerPassword').value;
+      const confirmInput = document.getElementById('confirmPassword');
+      if (password !== confirmInput.value) {
+        event.preventDefault();
+        confirmInput.setCustomValidity('Passwords do not match');
+        confirmInput.reportValidity();
+      } else {
+        confirmInput.setCustomValidity('');
+      }
+    });
+    document.getElementById('confirmPassword').addEventListener('input', event => event.target.setCustomValidity(''));
+  </script>
+</body>
+</html>
